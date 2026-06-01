@@ -27,6 +27,12 @@ import 'package:super_editor/src/infrastructure/_logging.dart';
 /// Some of the implementation details differ between `RenderBox` and `RenderSliver` use-cases,
 /// therefore this class is abstract. Use either the box or sliver version of this widget
 /// depending on your use-case.
+///
+/// ## Overlay Caching
+///
+/// To avoid rebuilding selection/caret overlays on every frame, [ContentLayers] uses a
+/// generation-based cache. Layers are only rebuilt when the content layout changes or
+/// an explicit invalidation occurs. This reduces jank on the critical frame path.
 abstract class ContentLayers extends RenderObjectWidget {
   const ContentLayers({
     super.key,
@@ -125,7 +131,7 @@ class ContentLayersElement extends RenderObjectElement {
 
   @override
   void mount(Element? parent, Object? newSlot) {
-    contentLayersLog.fine("ContentLayersElement - mounting");
+    contentLayersLog.fineLazy(() => "ContentLayersElement - mounting");
     super.mount(parent, newSlot);
 
     // Intercept calls to the BuildOwner's onBuildScheduled so that we can hijack an
@@ -141,13 +147,13 @@ class ContentLayersElement extends RenderObjectElement {
 
   @override
   void activate() {
-    contentLayersLog.fine("ContentLayersElement - activating");
+    contentLayersLog.fineLazy(() => "ContentLayersElement - activating");
     super.activate();
   }
 
   @override
   void deactivate() {
-    contentLayersLog.fine("ContentLayersElement - deactivating");
+    contentLayersLog.fineLazy(() => "ContentLayersElement - deactivating");
     // We have to deactivate the underlays and overlays ourselves, because we
     // intentionally don't visit them in visitChildren().
     for (final underlay in _underlays) {
@@ -165,7 +171,7 @@ class ContentLayersElement extends RenderObjectElement {
 
   @override
   void unmount() {
-    contentLayersLog.fine("ContentLayersElement - unmounting");
+    contentLayersLog.fineLazy(() => "ContentLayersElement - unmounting");
 
     // Remove our intercepting onBuildScheduled callback.
     _onBuildListeners.remove(_onBuildScheduled);
@@ -177,7 +183,7 @@ class ContentLayersElement extends RenderObjectElement {
   }
 
   void _onBuildScheduled() {
-    contentLayersLog.finer("ON BUILD SCHEDULED");
+    contentLayersLog.finerLazy(() => "ON BUILD SCHEDULED");
 
     // Schedule a callback to run at the beginning of the next frame so we can check
     // for dirty subtrees.
@@ -193,9 +199,9 @@ class ContentLayersElement extends RenderObjectElement {
     // layer Elements, preventing Flutter from rebuilding them, and then we reactivate
     // the layers during the next layout pass, after the content is laid out.
     SchedulerBinding.instance.scheduleFrameCallback((timeStamp) {
-      contentLayersLog.finer("SCHEDULED FRAME CALLBACK");
+      contentLayersLog.finerLazy(() => "SCHEDULED FRAME CALLBACK");
       if (!mounted) {
-        contentLayersLog.finer("We've unmounted since the end of the frame. Fizzling.");
+        contentLayersLog.finerLazy(() => "We've unmounted since the end of the frame. Fizzling.");
         return;
       }
 
@@ -203,7 +209,7 @@ class ContentLayersElement extends RenderObjectElement {
       final isAnyLayerDirty = _isAnyLayerDirty();
 
       if (isContentDirty && isAnyLayerDirty) {
-        contentLayersLog.fine("Marking needs build because content and at least one layer are both dirty.");
+        contentLayersLog.fineLazy(() => "Marking needs build because content and at least one layer are both dirty.");
         _temporarilyForgetLayers();
       }
     });
@@ -212,16 +218,16 @@ class ContentLayersElement extends RenderObjectElement {
   bool _isContentDirty() => _isSubtreeDirty(_content!);
 
   bool _isAnyLayerDirty() {
-    contentLayersLog.finer("Checking if any layer is dirty");
+    contentLayersLog.finerLazy(() => "Checking if any layer is dirty");
     bool hasDirtyElements = false;
 
-    contentLayersLog.finer("Checking underlays");
+    contentLayersLog.finerLazy(() => "Checking underlays");
     for (final underlay in _underlays) {
       contentLayersLog.finer(() => " - Is underlay ($underlay) subtree dirty? ${_isSubtreeDirty(underlay)}");
       hasDirtyElements = hasDirtyElements || _isSubtreeDirty(underlay);
     }
 
-    contentLayersLog.finer("Checking overlays");
+    contentLayersLog.finerLazy(() => "Checking overlays");
     for (final overlay in _overlays) {
       contentLayersLog.finer(() => " - Is overlay ($overlay) subtree dirty? ${_isSubtreeDirty(overlay)}");
       hasDirtyElements = hasDirtyElements || _isSubtreeDirty(overlay);
@@ -267,13 +273,13 @@ class ContentLayersElement extends RenderObjectElement {
 
   @override
   void markNeedsBuild() {
-    contentLayersLog.finer("ContentLayersElement - marking needs build");
+    contentLayersLog.finerLazy(() => "ContentLayersElement - marking needs build");
     super.markNeedsBuild();
   }
 
   /// Builds the underlays and overlays.
   void buildLayers() {
-    contentLayersLog.finer("ContentLayersElement - (re)building layers");
+    contentLayersLog.finerLazy(() => "ContentLayersElement - (re)building layers");
     final List<Element> underlays = List<Element>.filled(widget.underlays.length, _NullElement.instance);
     for (int i = 0; i < underlays.length; i += 1) {
       late final Element child;
@@ -317,7 +323,7 @@ class ContentLayersElement extends RenderObjectElement {
   /// from retaining information across builds, thus defeating the purpose of using
   /// a `StatefulWidget`.
   void _temporarilyForgetLayers() {
-    contentLayersLog.finer("ContentLayersElement - temporarily forgetting layers");
+    contentLayersLog.finerLazy(() => "ContentLayersElement - temporarily forgetting layers");
     for (final underlay in _underlays) {
       // Calling super.forgetChild directly to avoid adding it to _forgottenChildren.
       // We're doing this to prevent the children from building, but not from
@@ -471,6 +477,27 @@ abstract class RenderContentLayers implements RenderObject {
   /// This is set to `true` when `markNeedsLayout` is called and it's
   /// set to `false` after laying out the content.
   bool get contentNeedsLayout;
+
+  /// Monotonically increasing generation counter. Increments whenever the content
+  /// layout changes, allowing layers to detect whether they need to recompute
+  /// layout data.
+  int get contentLayoutGeneration;
+  set contentLayoutGeneration(int value);
+
+  /// Bumps [contentLayoutGeneration] to signal that content layout changed.
+  void invalidateContentLayoutCache() {
+    contentLayoutGeneration += 1;
+  }
+
+  /// Snapshot of the content's layout bounds from the last successful layout.
+  /// Layers can compare against this to skip redundant work.
+  Size? get lastContentLayoutSize;
+  set lastContentLayoutSize(Size? value);
+
+  /// Records the content size after a successful content layout pass.
+  void recordContentLayoutSize(Size size) {
+    lastContentLayoutSize = size;
+  }
 
   void insertChild(covariant RenderObject child, Object slot);
 
@@ -678,7 +705,7 @@ extension on Element {
 /// A [ContentLayerState] needs to be implemented a little bit differently than
 /// a traditional [StatefulWidget]. Calling `setState()` will cause this widget
 /// to rebuild, but the ancestor [ContentLayers] has no control over WHEN this
-/// widget will rebuild. This widget might rebuild before the content layer can
+/// widget will rebuild. This widget might rebuild before the content layout can
 /// run its layout. If this widget then attempts to query the content layout,
 /// Flutter throws an exception.
 ///
@@ -690,11 +717,22 @@ extension on Element {
 /// A [ContentLayerState] should NOT implement [build] - that implementation is
 /// handled on your behalf, and it coordinates between [computeLayoutData] and
 /// [doBuild].
+///
+/// ## Layout Data Caching
+///
+/// [ContentLayerState] caches the result of [computeLayoutData] keyed by the
+/// content layout generation counter ([RenderContentLayers.contentLayoutGeneration]).
+/// This means that if the content layout hasn't changed (same generation) the
+/// cached result is reused, avoiding expensive recomputation of selection/caret
+/// geometry on every frame.
 abstract class ContentLayerState<WidgetType extends ContentLayerStatefulWidget, LayoutDataType>
     extends State<WidgetType> {
   @protected
   LayoutDataType? get layoutData => _layoutData;
   LayoutDataType? _layoutData;
+
+  /// The content layout generation at which [_layoutData] was last computed.
+  int _cachedGeneration = -1;
 
   /// Traditional build method for this widget - this method should not be overridden
   /// in subclasses.
@@ -705,7 +743,13 @@ abstract class ContentLayerState<WidgetType extends ContentLayerStatefulWidget, 
     final contentLayout = contentElement?.findRenderObject();
 
     if (contentLayers != null && !contentLayers.renderObject.contentNeedsLayout) {
-      _layoutData = computeLayoutData(contentElement, contentLayout);
+      final currentGeneration = contentLayers.renderObject.contentLayoutGeneration;
+      if (currentGeneration != _cachedGeneration) {
+        // Content layout changed since last compute — recompute and cache.
+        _layoutData = computeLayoutData(contentElement, contentLayout);
+        _cachedGeneration = currentGeneration;
+      }
+      // else: reuse cached _layoutData — content layout unchanged.
     }
 
     return doBuild(context, _layoutData);

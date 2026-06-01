@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:follow_the_leader/follow_the_leader.dart';
 import 'package:super_editor/src/core/document.dart';
 import 'package:super_editor/src/core/document_composer.dart';
@@ -262,6 +263,10 @@ class _SuperReaderIosDocumentTouchInteractorState extends State<SuperReaderIosDo
   IosLongPressSelectionStrategy? _longPressStrategy;
 
   final _interactor = GlobalKey();
+
+  // Throttle drag selection updates to at most one per frame.
+  bool _hasPendingSelectionUpdate = false;
+  bool _selectionUpdateScheduled = false;
 
   @override
   void initState() {
@@ -735,7 +740,7 @@ class _SuperReaderIosDocumentTouchInteractorState extends State<SuperReaderIosDo
       );
       _longPressStrategy!.onLongPressDragUpdate(fingerDocumentOffset, fingerDocumentPosition);
     } else {
-      _updateSelectionForNewDragHandleLocation();
+      _scheduleSelectionUpdate();
     }
 
     _handleAutoScrolling.updateAutoScrollHandleMonitoring(
@@ -745,27 +750,6 @@ class _SuperReaderIosDocumentTouchInteractorState extends State<SuperReaderIosDo
     _controlsController!.showMagnifier();
 
     _placeFocalPointNearTouchOffset();
-  }
-
-  void _updateSelectionForNewDragHandleLocation() {
-    final docDragDelta = _globalDragOffset! - _globalStartDragOffset!;
-    final dragScrollDelta = _dragStartScrollOffset! - scrollPosition.pixels;
-    final docDragPosition = _docLayout
-        .getDocumentPositionNearestToOffset(_startDragPositionOffset! + docDragDelta - Offset(0, dragScrollDelta));
-
-    if (docDragPosition == null) {
-      return;
-    }
-
-    if (_dragHandleType == HandleType.upstream) {
-      _setSelection(widget.readerContext.composer.selection!.copyWith(
-        base: docDragPosition,
-      ));
-    } else if (_dragHandleType == HandleType.downstream) {
-      _setSelection(widget.readerContext.composer.selection!.copyWith(
-        extent: docDragPosition,
-      ));
-    }
   }
 
   void _onPanEnd(DragEndDetails details) {
@@ -781,6 +765,9 @@ class _SuperReaderIosDocumentTouchInteractorState extends State<SuperReaderIosDo
   }
 
   void _onDragSelectionEnd() {
+    _hasPendingSelectionUpdate = false;
+    _selectionUpdateScheduled = false;
+
     if (_dragMode == DragMode.longPress) {
       _onLongPressEnd();
     } else {
@@ -821,8 +808,26 @@ class _SuperReaderIosDocumentTouchInteractorState extends State<SuperReaderIosDo
   }
 
   void _onAutoScrollChange() {
-    _updateDragSelection();
+    _scheduleSelectionUpdate();
     _updateMagnifierFocalPointOnAutoScrollFrame();
+  }
+
+  /// Schedules a selection update to run at most once per frame.
+  ///
+  /// Multiple drag events within the same frame will be coalesced into
+  /// a single selection update, using the latest drag position.
+  void _scheduleSelectionUpdate() {
+    _hasPendingSelectionUpdate = true;
+    if (!_selectionUpdateScheduled) {
+      _selectionUpdateScheduled = true;
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        _selectionUpdateScheduled = false;
+        if (_hasPendingSelectionUpdate && mounted) {
+          _hasPendingSelectionUpdate = false;
+          _updateDragSelection();
+        }
+      });
+    }
   }
 
   void _updateDragSelection() {

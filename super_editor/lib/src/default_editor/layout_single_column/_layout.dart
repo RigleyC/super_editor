@@ -76,11 +76,24 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
   // to determine component ordering.
   final List<GlobalKey> _topToBottomComponentKeys = [];
 
+  final Map<GlobalKey, Rect> _componentBoundsCache = {};
+
+  final Map<String, int> _nodeIdToVisualIndex = {};
+
   late SingleColumnLayoutPresenterChangeListener _presenterListener;
 
   // The key for the renderBox that contains the actual document layout.
   final GlobalKey _boxKey = GlobalKey();
   BuildContext get boxContext => _boxKey.currentContext!;
+
+  // Cache of estimated heights per node for scroll calculations.
+  // Maps nodeId -> estimated height. Used by SliverChildBuilderDelegate
+  // to provide estimateExtent for offscreen children.
+  final Map<String, double> _nodeHeightCache = {};
+
+  // List of nodeIds in visual order, kept in sync with the presenter's
+  // view model whenever it updates. Used by the builder delegate.
+  List<String> _orderedNodeIds = [];
 
   @override
   void initState() {
@@ -116,7 +129,7 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
   }
 
   Future<void> _onPresenterMarkedDirty() async {
-    editorLayoutLog.fine("Layout presenter is dirty. Instructing it to update the view model.");
+    editorLayoutLog.fineLazy(() => "Layout presenter is dirty. Instructing it to update the view model.");
     widget.presenter.updateViewModel();
   }
 
@@ -127,15 +140,64 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
     required List<String> removedComponents,
   }) {
     if (addedComponents.isNotEmpty || movedComponents.isNotEmpty || removedComponents.isNotEmpty) {
+      _componentBoundsCache.clear();
+      _nodeIdToVisualIndex.clear();
+      // Also clear height cache for removed nodes.
+      for (final nodeId in removedComponents) {
+        _nodeHeightCache.remove(nodeId);
+      }
       setState(() {
         // Re-flow the whole layout.
       });
+    } else if (changedComponents.isNotEmpty) {
+      for (final nodeId in changedComponents) {
+        final key = _nodeIdsToComponentKeys[nodeId];
+        if (key != null) {
+          _componentBoundsCache.remove(key);
+        }
+      }
     }
+  }
+
+  /// Rebuilds the ordered node list from the current presenter view model.
+  void _rebuildOrderedNodeIds() {
+    final viewModel = widget.presenter.viewModel;
+    final newOrderedIds = <String>[];
+    final newComponentKeys = <String, GlobalKey>{};
+    final newNodeIds = <GlobalKey, String>{};
+
+    for (final componentViewModel in viewModel.componentViewModels) {
+      final componentKey = _obtainComponentKeyForDocumentNode(
+        newComponentKeyMap: newComponentKeys,
+        nodeId: componentViewModel.nodeId,
+      );
+      newNodeIds[componentKey] = componentViewModel.nodeId;
+      newOrderedIds.add(componentViewModel.nodeId);
+
+      _topToBottomComponentKeys.add(componentKey);
+      _nodeIdToVisualIndex[componentViewModel.nodeId] = newOrderedIds.length - 1;
+    }
+
+    _nodeIdsToComponentKeys
+      ..clear()
+      ..addAll(newComponentKeys);
+
+    _componentKeysToNodeIds
+      ..clear()
+      ..addAll(newNodeIds);
+
+    for (final key in _componentBoundsCache.keys.toList()) {
+      if (!newNodeIds.containsKey(key)) {
+        _componentBoundsCache.remove(key);
+      }
+    }
+
+    _orderedNodeIds = newOrderedIds;
   }
 
   @override
   DocumentPosition? getDocumentPositionAtOffset(Offset documentOffset) {
-    editorLayoutLog.info('Getting document position at exact offset: $documentOffset');
+    editorLayoutLog.infoLazy(() => 'Getting document position at exact offset: $documentOffset');
 
     final componentKey = _findComponentAtOffset(documentOffset);
     if (componentKey == null || componentKey.currentContext == null) {
@@ -158,7 +220,7 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
       rawDocumentOffset.dx.clamp(1.0, max(docBox.size.width - 1.0, 1.0)),
       rawDocumentOffset.dy,
     );
-    editorLayoutLog.info('Getting document position near offset: $documentOffset');
+    editorLayoutLog.infoLazy(() => 'Getting document position near offset: $documentOffset');
 
     if (_isAboveStartOfContent(documentOffset)) {
       // The given offset is above the start of the content.
@@ -189,7 +251,7 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
   DocumentPosition? _getDocumentPositionInComponentNearOffset(GlobalKey componentKey, Offset documentOffset) {
     final component = componentKey.currentState as DocumentComponent;
     final componentBox = componentKey.currentContext!.findRenderObject() as RenderBox;
-    editorLayoutLog.info(' - found node at position: $component');
+    editorLayoutLog.infoLazy(() => ' - found node at position: $component');
     final componentOffset = _componentOffset(componentBox, documentOffset);
     final componentPosition = component.getPositionAtOffset(componentOffset);
 
@@ -201,7 +263,7 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
       nodeId: _componentKeysToNodeIds[componentKey]!,
       nodePosition: componentPosition,
     );
-    editorLayoutLog.info(' - selection at offset: $selectionAtOffset');
+    editorLayoutLog.infoLazy(() => ' - selection at offset: $selectionAtOffset');
     return selectionAtOffset;
   }
 
@@ -237,7 +299,7 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
   Rect? getEdgeForPosition(DocumentPosition position) {
     final component = getComponentByNodeId(position.nodeId);
     if (component == null) {
-      editorLayoutLog.info('Could not find any component for node position: $position');
+      editorLayoutLog.infoLazy(() => 'Could not find any component for node position: $position');
       return null;
     }
 
@@ -253,7 +315,7 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
   Rect? getRectForPosition(DocumentPosition position) {
     final component = getComponentByNodeId(position.nodeId);
     if (component == null) {
-      editorLayoutLog.info('Could not find any component for node position: $position');
+      editorLayoutLog.infoLazy(() => 'Could not find any component for node position: $position');
       return null;
     }
 
@@ -267,10 +329,14 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
 
   @override
   Rect? getRectForSelection(DocumentPosition base, DocumentPosition extent) {
+    if (base.nodeId == extent.nodeId && base.nodePosition == extent.nodePosition) {
+      return getRectForPosition(base);
+    }
+
     final baseComponent = getComponentByNodeId(base.nodeId);
     final extentComponent = getComponentByNodeId(extent.nodeId);
     if (baseComponent == null || extentComponent == null) {
-      editorLayoutLog.info(
+      editorLayoutLog.infoLazy(() =>
           'Could not find base and/or extent position to calculate bounding box for selection. Base: $base -> $baseComponent, Extent: $extent -> $extentComponent');
       return null;
     }
@@ -278,26 +344,26 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
     DocumentComponent topComponent;
     final componentBoundingBoxes = <Rect>[];
 
-    // Collect bounding boxes for all selected components.
     final documentLayoutBox = boxContext.findRenderObject() as RenderBox;
     if (base.nodeId == extent.nodeId) {
-      // Selection within a single node.
       topComponent = extentComponent;
-      final componentOffsetInDocument = (topComponent.context.findRenderObject() as RenderBox)
-          .localToGlobal(Offset.zero, ancestor: documentLayoutBox);
-
-      final componentBoundingBox = extentComponent
-          .getRectForSelection(
-            base.nodePosition,
-            extent.nodePosition,
-          )
-          .translate(
-            componentOffsetInDocument.dx,
-            componentOffsetInDocument.dy,
-          );
+      final componentKey = _nodeIdsToComponentKeys[base.nodeId]!;
+      Rect componentBoundingBox;
+      if (_componentBoundsCache.containsKey(componentKey)) {
+        final cachedBounds = _componentBoundsCache[componentKey]!;
+        final selectionRectInComponent = extentComponent.getRectForSelection(base.nodePosition, extent.nodePosition);
+        componentBoundingBox = selectionRectInComponent.translate(cachedBounds.left, cachedBounds.top);
+      } else {
+        final componentOffsetInDocument = (topComponent.context.findRenderObject() as RenderBox)
+            .localToGlobal(Offset.zero, ancestor: documentLayoutBox);
+        final componentBounds = componentOffsetInDocument & (topComponent.context.findRenderObject() as RenderBox).size;
+        _componentBoundsCache[componentKey] = componentBounds;
+        componentBoundingBox = extentComponent
+            .getRectForSelection(base.nodePosition, extent.nodePosition)
+            .translate(componentOffsetInDocument.dx, componentOffsetInDocument.dy);
+      }
       componentBoundingBoxes.add(componentBoundingBox);
     } else {
-      // Selection across nodes.
       final selectedNodes = _getNodeIdsBetween(base.nodeId, extent.nodeId);
       topComponent = getComponentByNodeId(selectedNodes.first)!;
       final startPosition = selectedNodes.first == base.nodeId ? base.nodePosition : extent.nodePosition;
@@ -305,52 +371,37 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
 
       for (int i = 0; i < selectedNodes.length; ++i) {
         final component = getComponentByNodeId(selectedNodes[i])!;
-        final componentOffsetInDocument =
-            (component.context.findRenderObject() as RenderBox).localToGlobal(Offset.zero, ancestor: documentLayoutBox);
+        final compKey = _nodeIdsToComponentKeys[selectedNodes[i]]!;
+        Offset componentOffsetInDocument;
+        if (_componentBoundsCache.containsKey(compKey)) {
+          final cachedBounds = _componentBoundsCache[compKey]!;
+          componentOffsetInDocument = cachedBounds.topLeft;
+        } else {
+          final rawOffset =
+              (component.context.findRenderObject() as RenderBox).localToGlobal(Offset.zero, ancestor: documentLayoutBox);
+          final size = (component.context.findRenderObject() as RenderBox).size;
+          _componentBoundsCache[compKey] = rawOffset & size;
+          componentOffsetInDocument = rawOffset;
+        }
 
         if (i == 0) {
-          // This is the first node. The selection goes from
-          // startPosition to the end of the node.
           final firstNodeEndPosition = component.getEndPosition();
-          final selectionRectInComponent = component.getRectForSelection(
-            startPosition,
-            firstNodeEndPosition,
-          );
-          final componentRectInDocument = selectionRectInComponent.translate(
-            componentOffsetInDocument.dx,
-            componentOffsetInDocument.dy,
-          );
-          componentBoundingBoxes.add(componentRectInDocument);
+          final selectionRectInComponent = component.getRectForSelection(startPosition, firstNodeEndPosition);
+          componentBoundingBoxes.add(selectionRectInComponent.translate(componentOffsetInDocument.dx, componentOffsetInDocument.dy));
         } else if (i == selectedNodes.length - 1) {
-          // This is the last node. The selection goes from
-          // the beginning of the node to endPosition.
           final lastNodeStartPosition = component.getBeginningPosition();
-          final selectionRectInComponent = component.getRectForSelection(
-            lastNodeStartPosition,
-            endPosition,
-          );
-          final componentRectInDocument = selectionRectInComponent.translate(
-            componentOffsetInDocument.dx,
-            componentOffsetInDocument.dy,
-          );
-          componentBoundingBoxes.add(componentRectInDocument);
+          final selectionRectInComponent = component.getRectForSelection(lastNodeStartPosition, endPosition);
+          componentBoundingBoxes.add(selectionRectInComponent.translate(componentOffsetInDocument.dx, componentOffsetInDocument.dy));
         } else {
-          // This node sits between start and end. All content
-          // is selected.
           final selectionRectInComponent = component.getRectForSelection(
             component.getBeginningPosition(),
             component.getEndPosition(),
           );
-          final componentRectInDocument = selectionRectInComponent.translate(
-            componentOffsetInDocument.dx,
-            componentOffsetInDocument.dy,
-          );
-          componentBoundingBoxes.add(componentRectInDocument);
+          componentBoundingBoxes.add(selectionRectInComponent.translate(componentOffsetInDocument.dx, componentOffsetInDocument.dy));
         }
       }
     }
 
-    // Combine all component boxes into one big bounding box.
     Rect boundingBox = componentBoundingBoxes.first;
     for (int i = 1; i < componentBoundingBoxes.length; ++i) {
       boundingBox = boundingBox.expandToInclude(componentBoundingBoxes[i]);
@@ -360,21 +411,19 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
   }
 
   List<String> _getNodeIdsBetween(String baseNodeId, String extentNodeId) {
-    final baseComponentKey = _nodeIdsToComponentKeys[baseNodeId]!;
-    final baseComponentIndex = _topToBottomComponentKeys.indexOf(baseComponentKey);
-    final extentComponentKey = _nodeIdsToComponentKeys[extentNodeId]!;
-    final extentComponentIndex = _topToBottomComponentKeys.indexOf(extentComponentKey);
+    final baseIndex = _nodeIdToVisualIndex[baseNodeId]!;
+    final extentIndex = _nodeIdToVisualIndex[extentNodeId]!;
 
-    final topNodeIndex = baseComponentIndex <= extentComponentIndex ? baseComponentIndex : extentComponentIndex;
-    final bottomNodeIndex = topNodeIndex == baseComponentIndex ? extentComponentIndex : baseComponentIndex;
-    final componentsInside = _topToBottomComponentKeys.sublist(topNodeIndex, bottomNodeIndex + 1);
+    final topIndex = baseIndex <= extentIndex ? baseIndex : extentIndex;
+    final bottomIndex = topIndex == baseIndex ? extentIndex : baseIndex;
+    final componentsInside = _topToBottomComponentKeys.sublist(topIndex, bottomIndex + 1);
 
     return componentsInside.map((componentKey) => _componentKeysToNodeIds[componentKey]!).toList();
   }
 
   @override
   DocumentSelection? getDocumentSelectionInRegion(Offset baseOffset, Offset extentOffset) {
-    editorLayoutLog.info('getDocumentSelectionInRegion() - from: $baseOffset, to: $extentOffset');
+    editorLayoutLog.infoLazy(() => 'getDocumentSelectionInRegion() - from: $baseOffset, to: $extentOffset');
     final region = Rect.fromPoints(baseOffset, extentOffset);
 
     String? topNodeId;
@@ -392,9 +441,9 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
     final componentSearchStartIndex = max(_findComponentIndexAtOffset(selectionRegionTopOffset), 0);
     for (int i = componentSearchStartIndex; i < _topToBottomComponentKeys.length; i++) {
       final componentKey = _topToBottomComponentKeys[i];
-      editorLayoutLog.info(' - considering component "$componentKey"');
+      editorLayoutLog.infoLazy(() => ' - considering component "$componentKey"');
       if (componentKey.currentState is! DocumentComponent) {
-        editorLayoutLog.info(' - found unknown component: ${componentKey.currentState}');
+        editorLayoutLog.infoLazy(() => ' - found unknown component: ${componentKey.currentState}');
         continue;
       }
 
@@ -403,25 +452,25 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
       // Unselectable components should be avoided at base or extent.
       // They should only be selected when the surrounding components are selected.
       if (!component.isVisualSelectionSupported()) {
-        editorLayoutLog.fine(' - component does not allow visual selection. Moving on.');
+        editorLayoutLog.fineLazy(() => ' - component does not allow visual selection. Moving on.');
         continue;
       }
 
       final componentOverlap = _getLocalOverlapWithComponent(region, component);
 
       if (componentOverlap != null) {
-        editorLayoutLog.fine(' - drag intersects: $componentKey}');
-        editorLayoutLog.fine(' - intersection: $componentOverlap');
+        editorLayoutLog.fineLazy(() => ' - drag intersects: $componentKey}');
+        editorLayoutLog.fineLazy(() => ' - intersection: $componentOverlap');
         final componentBaseOffset = _componentOffset(
           componentKey.currentContext!.findRenderObject() as RenderBox,
           baseOffset,
         );
-        editorLayoutLog.fine(' - base component offset: $componentBaseOffset');
+        editorLayoutLog.fineLazy(() => ' - base component offset: $componentBaseOffset');
         final componentExtentOffset = _componentOffset(
           componentKey.currentContext!.findRenderObject() as RenderBox,
           extentOffset,
         );
-        editorLayoutLog.fine(' - extent component offset: $componentExtentOffset');
+        editorLayoutLog.fineLazy(() => ' - extent component offset: $componentExtentOffset');
 
         if (topNodeId == null) {
           // Because we're iterating through components from top to bottom, the
@@ -451,13 +500,13 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
     if (topNodeId == null || bottomNodeId == null) {
       // No document content exists in the given region.
       editorLayoutLog
-          .finer(' - no document content exists in the region. Node at top: $topNodeId. Node at bottom: $bottomNodeId');
+          .finerLazy(() => ' - no document content exists in the region. Node at top: $topNodeId. Node at bottom: $bottomNodeId');
       return null;
     }
 
     if (topNodeId == bottomNodeId) {
       // Region sits within a single component.
-      editorLayoutLog.fine(' - the entire selection sits within a single node: $topNodeId');
+      editorLayoutLog.fineLazy(() => ' - the entire selection sits within a single node: $topNodeId');
       return DocumentSelection(
         base: DocumentPosition(
           nodeId: topNodeId,
@@ -470,7 +519,7 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
       );
     } else {
       // Region covers multiple components.
-      editorLayoutLog.fine(' - the selection spans nodes: $topNodeId -> $bottomNodeId');
+      editorLayoutLog.fineLazy(() => ' - the selection spans nodes: $topNodeId -> $bottomNodeId');
 
       // Drag direction determines whether the extent offset is at the
       // top or bottom of the drag rect.
@@ -497,7 +546,7 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
     final componentBox = component.context.findRenderObject() as RenderBox;
     final contentOffset = componentBox.localToGlobal(Offset.zero, ancestor: boxContext.findRenderObject());
     final componentBounds = contentOffset & componentBox.size;
-    editorLayoutLog.finest("Component bounds: $componentBounds, versus region of interest: $region");
+    editorLayoutLog.finestLazy(() => "Component bounds: $componentBounds, versus region of interest: $region");
 
     if (region.overlaps(componentBounds)) {
       // Report the overlap in our local coordinate space.
@@ -650,11 +699,11 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
   DocumentComponent? getComponentByNodeId(String nodeId) {
     final key = _nodeIdsToComponentKeys[nodeId];
     if (key == null) {
-      editorLayoutLog.info('WARNING: could not find component for node ID: $nodeId');
+      editorLayoutLog.infoLazy(() => 'WARNING: could not find component for node ID: $nodeId');
       return null;
     }
     if (key.currentState is! DocumentComponent) {
-      editorLayoutLog.info(
+      editorLayoutLog.infoLazy(() =>
           'WARNING: found component but it\'s not a DocumentComponent: $nodeId, layout key: $key, state: ${key.currentState}, widget: ${key.currentWidget}, context: ${key.currentContext}');
       if (kDebugMode) {
         throw Exception(
@@ -714,14 +763,30 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
 
   @override
   Widget build(BuildContext context) {
-    editorLayoutLog.fine("Building document layout");
+    editorLayoutLog.fineLazy(() => "Building document layout");
+
+    // Rebuild the ordered node list from the current view model.
+    _topToBottomComponentKeys.clear();
+    _nodeIdToVisualIndex.clear();
+    _rebuildOrderedNodeIds();
+
+    final padding = widget.presenter.viewModel.padding;
+
     Widget result = Padding(
       key: _boxKey,
-      padding: widget.presenter.viewModel.padding,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: _buildDocComponents(),
+      padding: padding,
+      child: CustomScrollView(
+        physics: const ClampingScrollPhysics(),
+        slivers: [
+          SliverList(
+            delegate: SliverChildBuilderDelegate(
+              _buildComponentAtIndex,
+              childCount: _orderedNodeIds.length,
+              addAutomaticKeepAlives: false,
+              addRepaintBoundaries: true,
+            ),
+          ),
+        ],
       ),
     );
 
@@ -731,62 +796,48 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
       );
     }
 
-    editorLayoutLog.fine("Done building document");
+    editorLayoutLog.fineLazy(() => "Done building document");
     return result;
   }
 
-  List<Widget> _buildDocComponents() {
-    editorLayoutLog.fine('Building all document layout components');
-
-    final docComponents = <Widget>[];
-    final newComponentKeys = <String, GlobalKey>{};
-    final newNodeIds = <GlobalKey, String>{};
-    _topToBottomComponentKeys.clear();
-
-    final viewModel = widget.presenter.viewModel;
-    editorLayoutLog.fine("Rendering layout view model: ${viewModel.hashCode}");
-    for (final componentViewModel in viewModel.componentViewModels) {
-      final componentKey = _obtainComponentKeyForDocumentNode(
-        newComponentKeyMap: newComponentKeys,
-        nodeId: componentViewModel.nodeId,
-      );
-      newNodeIds[componentKey] = componentViewModel.nodeId;
-      editorLayoutLog.finer('Node -> Key: ${componentViewModel.nodeId} -> $componentKey');
-
-      _topToBottomComponentKeys.add(componentKey);
-
-      docComponents.add(
-        // Rebuilds whenever this particular component view model changes
-        // within the overall layout view model.
-        _PresenterComponentBuilder(
-          presenter: widget.presenter,
-          watchNode: componentViewModel.nodeId,
-          builder: (context, newComponentViewModel) {
-            // Converts the component view model into a widget.
-            return _Component(
-              componentBuilders: widget.componentBuilders,
-              componentKey: componentKey,
-              componentViewModel: newComponentViewModel,
-            );
-          },
-        ),
-      );
+  /// Builds the component widget at the given [index] for the [SliverChildBuilderDelegate].
+  ///
+  /// Components are built on-demand: only when the sliver needs them for
+  /// layout or display. This avoids constructing every component upfront
+  /// for large documents.
+  Widget? _buildComponentAtIndex(BuildContext context, int index) {
+    if (index < 0 || index >= _orderedNodeIds.length) {
+      return null;
     }
 
-    _nodeIdsToComponentKeys
-      ..clear()
-      ..addAll(newComponentKeys);
+    final nodeId = _orderedNodeIds[index];
+    final componentKey = _nodeIdsToComponentKeys[nodeId];
 
-    _componentKeysToNodeIds
-      ..clear()
-      ..addAll(newNodeIds);
+    if (componentKey == null) {
+      editorLayoutLog.warningLazy(() => 'No component key for node: $nodeId at index $index');
+      return const SizedBox();
+    }
 
-    editorLayoutLog.finer(' - keys -> IDs after building all components:');
-    _nodeIdsToComponentKeys.forEach((key, value) {
-      editorLayoutLog.finer('   - $key: $value');
-    });
+    // Retrieve the current view model for this node.
+    final viewModel = widget.presenter.viewModel.getComponentViewModelByNodeId(nodeId);
+    if (viewModel == null) {
+      editorLayoutLog.warningLazy(() => 'No view model for node: $nodeId');
+      return const SizedBox();
+    }
 
-    return docComponents;
+    editorLayoutLog.finestLazy(() => 'Building component at index $index for node: $nodeId');
+
+    return _PresenterComponentBuilder(
+      presenter: widget.presenter,
+      watchNode: nodeId,
+      builder: (context, newComponentViewModel) {
+        return _Component(
+          componentBuilders: widget.componentBuilders,
+          componentKey: componentKey,
+          componentViewModel: newComponentViewModel,
+        );
+      },
+    );
   }
 
   /// Obtains a `GlobalKey` that should be attached to the component
@@ -866,8 +917,17 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
 
     final componentBox = component.context.findRenderObject() as RenderBox;
     final contentOffset = componentBox.localToGlobal(Offset.zero, ancestor: boxContext.findRenderObject());
-    return contentOffset & componentBox.size;
+    final bounds = contentOffset & componentBox.size;
+
+    // Cache the height for this node.
+    final nodeId = _componentKeysToNodeIds[componentKey];
+    if (nodeId != null) {
+      _nodeHeightCache[nodeId] = bounds.height;
+    }
+
+    return bounds;
   }
+
 }
 
 class _PresenterComponentBuilder extends StatefulWidget {
@@ -930,7 +990,7 @@ class _PresenterComponentBuilderState extends State<_PresenterComponentBuilder> 
 
   @override
   Widget build(BuildContext context) {
-    editorLayoutLog.finest("Building component: ${widget.watchNode}");
+    editorLayoutLog.finestLazy(() => "Building component: ${widget.watchNode}");
 
     final viewModel = widget
         .presenter //

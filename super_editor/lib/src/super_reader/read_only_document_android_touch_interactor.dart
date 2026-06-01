@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:follow_the_leader/follow_the_leader.dart';
 import 'package:super_editor/src/core/document.dart';
@@ -158,6 +159,10 @@ class _ReadOnlyAndroidDocumentTouchInteractorState extends State<ReadOnlyAndroid
   final _longPressMagnifierGlobalOffset = ValueNotifier<Offset?>(null);
 
   final _interactor = GlobalKey();
+
+  // Throttle drag selection updates to at most one per frame.
+  bool _hasPendingSelectionUpdate = false;
+  bool _selectionUpdateScheduled = false;
 
   @override
   void initState() {
@@ -701,7 +706,7 @@ class _ReadOnlyAndroidDocumentTouchInteractorState extends State<ReadOnlyAndroid
 
     _handleAutoScrolling.startAutoScrollHandleMonitoring();
 
-    scrollPosition.addListener(_updateDragSelection);
+    scrollPosition.addListener(_onAutoScrollSelectionUpdate);
 
     _editingController
       ..hideToolbar()
@@ -763,6 +768,9 @@ class _ReadOnlyAndroidDocumentTouchInteractorState extends State<ReadOnlyAndroid
   }
 
   void _onLongPressEnd() {
+    _hasPendingSelectionUpdate = false;
+    _selectionUpdateScheduled = false;
+
     _longPressStrategy!.onLongPressEnd();
 
     // Cancel any on-going long-press.
@@ -770,7 +778,7 @@ class _ReadOnlyAndroidDocumentTouchInteractorState extends State<ReadOnlyAndroid
     _longPressMagnifierGlobalOffset.value = null;
 
     _handleAutoScrolling.stopAutoScrollHandleMonitoring();
-    scrollPosition.removeListener(_updateDragSelection);
+    scrollPosition.removeListener(_onAutoScrollSelectionUpdate);
 
     _editingController
       ..allowHandles()
@@ -833,7 +841,7 @@ class _ReadOnlyAndroidDocumentTouchInteractorState extends State<ReadOnlyAndroid
 
     _handleAutoScrolling.startAutoScrollHandleMonitoring();
 
-    scrollPosition.addListener(_updateDragSelection);
+    scrollPosition.addListener(_onAutoScrollSelectionUpdate);
   }
 
   void _onHandleDragUpdate(Offset globalOffset) {
@@ -841,7 +849,7 @@ class _ReadOnlyAndroidDocumentTouchInteractorState extends State<ReadOnlyAndroid
     _dragEndInInteractor = interactorBox.globalToLocal(globalOffset);
     final dragEndInViewport = _interactorOffsetInViewport(_dragEndInInteractor!);
 
-    _updateSelectionForNewDragHandleLocation();
+    _scheduleSelectionUpdate();
 
     _handleAutoScrolling.updateAutoScrollHandleMonitoring(
       dragEndInViewport: dragEndInViewport,
@@ -850,30 +858,12 @@ class _ReadOnlyAndroidDocumentTouchInteractorState extends State<ReadOnlyAndroid
     _editingController.showMagnifier();
   }
 
-  void _updateSelectionForNewDragHandleLocation() {
-    final docDragDelta = _globalDragOffset! - _globalStartDragOffset!;
-    final dragScrollDelta = _dragStartScrollOffset! - scrollPosition.pixels;
-    final docDragPosition = _docLayout
-        .getDocumentPositionNearestToOffset(_startDragPositionOffset! + docDragDelta - Offset(0, dragScrollDelta));
-
-    if (docDragPosition == null) {
-      return;
-    }
-
-    if (_handleType == SelectionHandleType.upstream) {
-      _setSelection(widget.readerContext.composer.selection!.copyWith(
-        base: docDragPosition,
-      ));
-    } else if (_handleType == SelectionHandleType.downstream) {
-      _setSelection(widget.readerContext.composer.selection!.copyWith(
-        extent: docDragPosition,
-      ));
-    }
-  }
-
   void _onHandleDragEnd() {
+    _hasPendingSelectionUpdate = false;
+    _selectionUpdateScheduled = false;
+
     _handleAutoScrolling.stopAutoScrollHandleMonitoring();
-    scrollPosition.removeListener(_updateDragSelection);
+    scrollPosition.removeListener(_onAutoScrollSelectionUpdate);
 
     _editingController.hideMagnifier();
 
@@ -889,6 +879,28 @@ class _ReadOnlyAndroidDocumentTouchInteractorState extends State<ReadOnlyAndroid
       _editingController.showToolbar();
       _positionToolbar();
     }
+  }
+
+  /// Schedules a selection update to run at most once per frame.
+  ///
+  /// Multiple drag events within the same frame will be coalesced into
+  /// a single selection update, using the latest drag position.
+  void _scheduleSelectionUpdate() {
+    _hasPendingSelectionUpdate = true;
+    if (!_selectionUpdateScheduled) {
+      _selectionUpdateScheduled = true;
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        _selectionUpdateScheduled = false;
+        if (_hasPendingSelectionUpdate && mounted) {
+          _hasPendingSelectionUpdate = false;
+          _updateDragSelection();
+        }
+      });
+    }
+  }
+
+  void _onAutoScrollSelectionUpdate() {
+    _scheduleSelectionUpdate();
   }
 
   void _updateDragSelection() {

@@ -1231,7 +1231,7 @@ class MutableDocument with Iterable<DocumentNode> implements Document, Editable 
   void insertNodeAt(int index, DocumentNode node) {
     if (index <= _nodes.length) {
       _nodes.insert(index, node);
-      _refreshNodeIdCaches();
+      _refreshNodeIdCachesFromIndex(index);
     }
   }
 
@@ -1242,7 +1242,7 @@ class MutableDocument with Iterable<DocumentNode> implements Document, Editable 
   }) {
     final nodeIndex = getNodeIndexById(existingNodeId);
     _nodes.insert(nodeIndex, newNode);
-    _refreshNodeIdCaches();
+    _refreshNodeIdCachesFromIndex(nodeIndex);
   }
 
   /// Inserts [newNode] immediately after the given [existingNode].
@@ -1253,7 +1253,7 @@ class MutableDocument with Iterable<DocumentNode> implements Document, Editable 
     final nodeIndex = getNodeIndexById(existingNodeId);
     if (nodeIndex >= 0 && nodeIndex < _nodes.length) {
       _nodes.insert(nodeIndex + 1, newNode);
-      _refreshNodeIdCaches();
+      _refreshNodeIdCachesFromIndex(nodeIndex + 1);
     }
   }
 
@@ -1262,14 +1262,16 @@ class MutableDocument with Iterable<DocumentNode> implements Document, Editable 
     _nodes.insert(_nodes.length, node);
 
     // The node list changed, we need to update the map to consider the new indices.
-    _refreshNodeIdCaches();
+    // For adding at the end, we only need to add the new entry
+    _nodeIndicesById[node.id] = _nodes.length - 1;
+    _nodesById[node.id] = node;
   }
 
   /// Deletes the node at the given [index].
   void deleteNodeAt(int index) {
     if (index >= 0 && index < _nodes.length) {
       _nodes.removeAt(index);
-      _refreshNodeIdCaches();
+      _refreshNodeIdCachesFromIndex(index);
     } else {
       editorDocLog.warning('Could not delete node. Index out of range: $index');
     }
@@ -1285,7 +1287,7 @@ class MutableDocument with Iterable<DocumentNode> implements Document, Editable 
     }
 
     _nodes.removeAt(index);
-    _refreshNodeIdCaches();
+    _refreshNodeIdCachesFromIndex(index);
 
     return isRemoved;
   }
@@ -1306,9 +1308,10 @@ class MutableDocument with Iterable<DocumentNode> implements Document, Editable 
       throw Exception('Could not find node with nodeId: $nodeId');
     }
 
+    final sourceIndex = getNodeIndexById(nodeId);
     if (_nodes.remove(node)) {
       _nodes.insert(targetIndex, node);
-      _refreshNodeIdCaches();
+      _refreshNodeIdCachesFromIndex(min(sourceIndex, targetIndex));
     }
   }
 
@@ -1341,7 +1344,7 @@ class MutableDocument with Iterable<DocumentNode> implements Document, Editable 
     if (index >= 0) {
       _nodes.removeAt(index);
       _nodes.insert(index, newNode);
-      _refreshNodeIdCaches();
+      _refreshNodeIdCachesFromIndex(index);
     } else {
       throw Exception('Could not find node with ID: $nodeId');
     }
@@ -1424,6 +1427,31 @@ class MutableDocument with Iterable<DocumentNode> implements Document, Editable 
     _nodeIndicesById.clear();
     _nodesById.clear();
     for (int i = 0; i < _nodes.length; i++) {
+      final node = _nodes[i];
+      _nodeIndicesById[node.id] = i;
+      _nodesById[node.id] = node;
+    }
+  }
+
+  /// Updates node id caches incrementally starting from [startIndex].
+  ///
+  /// Only updates indices for nodes at [startIndex] and beyond, which is
+  /// more efficient than rebuilding the entire cache for large documents.
+  void _refreshNodeIdCachesFromIndex(int startIndex) {
+    // Remove entries for nodes that were at startIndex or beyond
+    final nodesToRemove = <String>[];
+    for (final entry in _nodeIndicesById.entries) {
+      if (entry.value >= startIndex) {
+        nodesToRemove.add(entry.key);
+      }
+    }
+    for (final id in nodesToRemove) {
+      _nodeIndicesById.remove(id);
+      _nodesById.remove(id);
+    }
+    
+    // Re-add nodes from startIndex onwards
+    for (int i = startIndex; i < _nodes.length; i++) {
       final node = _nodes[i];
       _nodeIndicesById[node.id] = i;
       _nodesById[node.id] = node;

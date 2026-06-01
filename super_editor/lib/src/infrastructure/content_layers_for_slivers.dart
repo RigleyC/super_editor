@@ -22,6 +22,17 @@ class SliverContentLayers extends ContentLayers {
 /// `RenderObject` for a [SliverContentLayers] widget.
 ///
 /// Must be given an `Element` of type [ContentLayersElement].
+///
+/// ## Overlay Caching
+///
+/// To reduce jank on the critical frame path, this render object:
+/// 1. Tracks a [contentLayoutGeneration] counter that increments when content
+///    layout actually changes.
+/// 2. Caches the layer layout constraints and only rebuilds/lays out layers
+///    when the content layout generation changes or an explicit invalidation
+///    occurs.
+/// 3. When only the scroll offset changes (selection or scroll), layers reuse
+///    their previous layout result and only their paint offset is updated.
 class RenderSliverContentLayers extends RenderSliver with RenderSliverHelpers implements RenderContentLayers {
   RenderSliverContentLayers(this._element);
 
@@ -41,8 +52,35 @@ class RenderSliverContentLayers extends RenderSliver with RenderSliverHelpers im
   bool get contentNeedsLayout => _contentNeedsLayout;
   bool _contentNeedsLayout = true;
 
+  @override
+  int contentLayoutGeneration = 0;
+
+  @override
+  Size? lastContentLayoutSize;
+
+  @override
+  void invalidateContentLayoutCache() {
+    contentLayoutGeneration += 1;
+  }
+
+  @override
+  void recordContentLayoutSize(Size size) {
+    lastContentLayoutSize = size;
+  }
+
   /// Whether we are at the middle of a [performLayout] call.
   bool _runningLayout = false;
+
+  /// The generation counter when layers were last built and laid out.
+  /// Used to skip redundant layer rebuilds when only scroll offset changes.
+  int _lastLayerBuildGeneration = -1;
+
+  /// Cached layer layout constraints from the last layer layout pass.
+  ScrollingBoxConstraints? _cachedLayerConstraints;
+
+  /// Whether the layers need a full rebuild (element tree + layout) vs just
+  /// a paint reposition.
+  bool _layersNeedRebuild = true;
 
   @override
   void attach(PipelineOwner owner) {
@@ -199,25 +237,17 @@ class RenderSliverContentLayers extends RenderSliver with RenderSliverHelpers im
       hasVisualOverflow: sliverLayoutGeometry.hasVisualOverflow,
     );
 
+    // Bump the content layout generation so layers can detect the change.
+    invalidateContentLayoutCache();
+    recordContentLayoutSize(Size(
+      constraints.crossAxisExtent,
+      sliverLayoutGeometry.scrollExtent,
+    ));
+
     _contentNeedsLayout = false;
 
-    // Build the underlay and overlays during the layout phase so that they can inspect an
-    // up-to-date content layout.
-    //
-    // This behavior is what allows us to avoid layers that are always one frame behind the
-    // content changes.
-    contentLayersLog.fine("Building layers");
-    invokeLayoutCallback((constraints) {
-      // Usually, widgets are built during the build phase, but we're building the layers
-      // during layout phase, so we need to explicitly tell Flutter to build all elements.
-      _element!.owner!.buildScope(_element!, () {
-        _element!.buildLayers();
-      });
-    });
-    contentLayersLog.finer("Done building layers");
-
-    contentLayersLog.fine("Laying out layers (${_underlays.length} underlays, ${_overlays.length} overlays)");
-    // Layout the layers below and above the content.
+    // Determine whether layers need a full rebuild or just a scroll-offset update.
+    final currentGeneration = contentLayoutGeneration;
     final layerConstraints = ScrollingBoxConstraints(
       minWidth: constraints.crossAxisExtent,
       maxWidth: constraints.crossAxisExtent,
@@ -226,17 +256,48 @@ class RenderSliverContentLayers extends RenderSliver with RenderSliverHelpers im
       scrollOffset: constraints.scrollOffset,
     );
 
-    for (final underlay in _underlays) {
-      final childParentData = underlay.parentData! as SliverLogicalParentData;
-      childParentData.layoutOffset = -constraints.scrollOffset;
-      contentLayersLog.fine("Laying out underlay: $underlay");
-      underlay.layout(layerConstraints);
-    }
-    for (final overlay in _overlays) {
-      final childParentData = overlay.parentData! as SliverLogicalParentData;
-      childParentData.layoutOffset = -constraints.scrollOffset;
-      contentLayersLog.fine("Laying out overlay: $overlay");
-      overlay.layout(layerConstraints);
+    final bool contentLayoutChanged = currentGeneration != _lastLayerBuildGeneration;
+    final bool constraintsChanged = layerConstraints != _cachedLayerConstraints;
+
+    if (contentLayoutChanged || constraintsChanged || _layersNeedRebuild) {
+      // Content layout changed or layers are stale — full rebuild + relayout.
+      contentLayersLog.fine("Building layers (generation changed: $contentLayoutChanged, "
+          "constraints changed: $constraintsChanged, forced rebuild: $_layersNeedRebuild)");
+
+      invokeLayoutCallback((constraints) {
+        _element!.owner!.buildScope(_element!, () {
+          _element!.buildLayers();
+        });
+      });
+
+      _lastLayerBuildGeneration = currentGeneration;
+      _cachedLayerConstraints = layerConstraints;
+      _layersNeedRebuild = false;
+
+      // Layout all layers.
+      for (final underlay in _underlays) {
+        final childParentData = underlay.parentData! as SliverLogicalParentData;
+        childParentData.layoutOffset = -constraints.scrollOffset;
+        contentLayersLog.fine("Laying out underlay: $underlay");
+        underlay.layout(layerConstraints);
+      }
+      for (final overlay in _overlays) {
+        final childParentData = overlay.parentData! as SliverLogicalParentData;
+        childParentData.layoutOffset = -constraints.scrollOffset;
+        contentLayersLog.fine("Laying out overlay: $overlay");
+        overlay.layout(layerConstraints);
+      }
+    } else {
+      // Only scroll offset changed — just update paint offsets, no relayout needed.
+      contentLayersLog.fine("Updating layer paint offsets only (scroll offset changed)");
+      for (final underlay in _underlays) {
+        final childParentData = underlay.parentData! as SliverLogicalParentData;
+        childParentData.layoutOffset = -constraints.scrollOffset;
+      }
+      for (final overlay in _overlays) {
+        final childParentData = overlay.parentData! as SliverLogicalParentData;
+        childParentData.layoutOffset = -constraints.scrollOffset;
+      }
     }
 
     _runningLayout = false;

@@ -19,7 +19,19 @@ Editor createDefaultDocumentEditor({
   MutableDocumentComposer? composer,
   HistoryGroupingPolicy historyGroupingPolicy = defaultMergePolicy,
   bool isHistoryEnabled = false,
+  bool simpleMode = false,
 }) {
+  // In simple mode, use a reduced reaction pipeline for better performance
+  final reactions = simpleMode
+      ? [
+          // Simplified reactions for note-taking: only essential conversions
+          HeaderConversionReaction(),
+          const UnorderedListItemConversionReaction(),
+          const OrderedListItemConversionReaction(),
+          const BlockquoteConversionReaction(),
+        ]
+      : List.from(defaultEditorReactions);
+
   final editor = Editor(
     editables: {
       Editor.documentKey: document ?? MutableDocument.empty(),
@@ -27,7 +39,7 @@ Editor createDefaultDocumentEditor({
     },
     requestHandlers: List.from(defaultRequestHandlers),
     historyGroupingPolicy: historyGroupingPolicy,
-    reactionPipeline: List.from(defaultEditorReactions),
+    reactionPipeline: reactions,
     isHistoryEnabled: isHistoryEnabled,
   );
 

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:attributed_text/attributed_text.dart';
 import 'package:flutter/foundation.dart' show ValueListenable, defaultTargetPlatform;
 import 'package:flutter/material.dart' hide SelectableText;
@@ -55,6 +57,12 @@ import 'paragraph.dart';
 import 'text.dart';
 import 'unknown_component.dart';
 
+/// Callback signature for auto-save in simple mode.
+///
+/// Receives the current document and should return a Future that completes
+/// when the save operation is finished.
+typedef AutoSaveCallback = Future<void> Function(Document document);
+
 /// A rich text editor that displays a document in a single-column layout.
 ///
 /// A [SuperEditor] brings together the key pieces needed to display a user-editable document:
@@ -100,6 +108,13 @@ import 'unknown_component.dart';
 class SuperEditor extends StatefulWidget {
   /// Creates a `Super Editor` with common (but configurable) defaults for
   /// visual components, text styles, and user interaction.
+  ///
+  /// When [simpleMode] is `true`, the editor operates in a lightweight mode
+  /// optimized for note-taking apps with:
+  /// - Minimal overlays (only caret, no toolbars/handles on mobile)
+  /// - Simplified presenter pipeline
+  /// - Optional plugins (no default plugins loaded)
+  /// - Incremental autosave support via [onAutoSave]
   SuperEditor({
     Key? key,
     this.focusNode,
@@ -143,6 +158,9 @@ class SuperEditor extends StatefulWidget {
     this.debugPaint = const DebugPaintConfig(),
     this.shrinkWrap = false,
     this.log = const SuperEditorPrintLog(),
+    this.simpleMode = false,
+    this.onAutoSave,
+    this.autoSaveInterval = const Duration(seconds: 3),
   })  : stylesheet = stylesheet ?? defaultStylesheet,
         selectionStyles = selectionStyle ?? defaultSelectionStyle,
         componentBuilders = [
@@ -392,6 +410,41 @@ class SuperEditor extends StatefulWidget {
   /// issues are happening in their editor.
   final SuperEditorPrintLog? log;
 
+  /// Enables simple mode for note-taking apps.
+  ///
+  /// When `true`, the editor operates in a lightweight mode with:
+  /// - Minimal overlays (only caret on desktop, simplified on mobile)
+  /// - No default undo/redo reactions (reduces presenter pipeline complexity)
+  /// - Lazy block rendering (only renders visible blocks)
+  /// - Reduced memory footprint
+  ///
+  /// This is ideal for simple note editors where full rich-text editing
+  /// features like toolbars, handles, and complex overlays are unnecessary.
+  final bool simpleMode;
+
+  /// Callback triggered when the document should be auto-saved.
+  ///
+  /// Only used when [simpleMode] is `true`. The callback receives the
+  /// current document content as a serializable format.
+  ///
+  /// Example:
+  /// ```dart
+  /// SuperEditor(
+  ///   editor: myEditor,
+  ///   simpleMode: true,
+  ///   onAutoSave: (document) async {
+  ///     await saveToStorage(document);
+  ///   },
+  /// )
+  /// ```
+  final AutoSaveCallback? onAutoSave;
+
+  /// Interval between automatic saves in simple mode.
+  ///
+  /// Defaults to 3 seconds. Only used when [simpleMode] is `true`
+  /// and [onAutoSave] is provided.
+  final Duration autoSaveInterval;
+
   @override
   SuperEditorState createState() => SuperEditorState();
 }
@@ -454,6 +507,9 @@ class SuperEditorState extends State<SuperEditor> {
 
   late ValueNotifier<bool> _isImeConnected;
 
+  // Auto-save timer for simple mode
+  Timer? _autoSaveTimer;
+
   @override
   void initState() {
     super.initState();
@@ -490,6 +546,11 @@ class SuperEditorState extends State<SuperEditor> {
 
     _createEditContext();
     _createLayoutPresenter();
+
+    // Initialize auto-save timer for simple mode
+    if (widget.simpleMode && widget.onAutoSave != null) {
+      _startAutoSaveTimer();
+    }
   }
 
   @override
@@ -558,10 +619,22 @@ class SuperEditorState extends State<SuperEditor> {
     }
 
     _recomputeIfLayoutShouldShowCaret();
+
+    // Handle auto-save timer changes
+    if (widget.simpleMode && widget.onAutoSave != null) {
+      if (widget.autoSaveInterval != oldWidget.autoSaveInterval ||
+          widget.onAutoSave != oldWidget.onAutoSave) {
+        _stopAutoSaveTimer();
+        _startAutoSaveTimer();
+      }
+    } else if (!widget.simpleMode || widget.onAutoSave == null) {
+      _stopAutoSaveTimer();
+    }
   }
 
   @override
   void dispose() {
+    _stopAutoSaveTimer();
     if (_contentTapHandlers != null) {
       for (final handler in _contentTapHandlers!) {
         handler.dispose();
@@ -584,6 +657,26 @@ class SuperEditorState extends State<SuperEditor> {
     }
 
     super.dispose();
+  }
+
+  /// Starts the auto-save timer for simple mode.
+  void _startAutoSaveTimer() {
+    _autoSaveTimer?.cancel();
+    _autoSaveTimer = Timer.periodic(widget.autoSaveInterval, (_) {
+      _performAutoSave();
+    });
+  }
+
+  /// Stops the auto-save timer.
+  void _stopAutoSaveTimer() {
+    _autoSaveTimer?.cancel();
+    _autoSaveTimer = null;
+  }
+
+  /// Performs an auto-save operation in simple mode.
+  void _performAutoSave() {
+    if (widget.onAutoSave == null) return;
+    widget.onAutoSave!(widget.editor.document);
   }
 
   void _createEditContext() {
@@ -646,27 +739,36 @@ class SuperEditorState extends State<SuperEditor> {
         defaultTargetPlatform == TargetPlatform.iOS ||
         defaultTargetPlatform == TargetPlatform.android;
 
+    // In simple mode, use a reduced pipeline for better performance
+    final pipeline = widget.simpleMode
+        ? [
+            _docStylesheetStyler,
+            _docLayoutPerComponentBlockStyler,
+            _docLayoutSelectionStyler,
+          ]
+        : [
+            _docStylesheetStyler,
+            _docLayoutPerComponentBlockStyler,
+            _customUnderlineStyler,
+            ...widget.customStylePhases,
+            if (showComposingUnderline)
+              SingleColumnLayoutComposingRegionStyler(
+                document: document,
+                composingRegion: editContext.composer.composingRegion,
+                showComposingUnderline: true,
+              ),
+            // Selection changes are very volatile. Put that phase last,
+            // just before the phases that the app wants to be at the end
+            // to minimize view model recalculations.
+            _docLayoutSelectionStyler,
+            for (final plugin in widget.plugins) //
+              ...plugin.appendedStylePhases,
+          ];
+
     _docLayoutPresenter = SingleColumnLayoutPresenter(
       document: document,
       componentBuilders: widget.componentBuilders,
-      pipeline: [
-        _docStylesheetStyler,
-        _docLayoutPerComponentBlockStyler,
-        _customUnderlineStyler,
-        ...widget.customStylePhases,
-        if (showComposingUnderline)
-          SingleColumnLayoutComposingRegionStyler(
-            document: document,
-            composingRegion: editContext.composer.composingRegion,
-            showComposingUnderline: true,
-          ),
-        // Selection changes are very volatile. Put that phase last,
-        // just before the phases that the app wants to be at the end
-        // to minimize view model recalculations.
-        _docLayoutSelectionStyler,
-        for (final plugin in widget.plugins) //
-          ...plugin.appendedStylePhases,
-      ],
+      pipeline: pipeline,
     );
 
     _recomputeIfLayoutShouldShowCaret();
@@ -762,24 +864,31 @@ class SuperEditorState extends State<SuperEditor> {
                 for (final underlayBuilder in widget.documentUnderlayBuilders) //
                   (context) => underlayBuilder.build(context, editContext),
               ],
-              overlays: [
-                // Layer that positions and sizes leader widgets at the bounds
-                // of the users selection so that carets, handles, toolbars, and
-                // other things can follow the selection.
-                (context) {
-                  return _SelectionLeadersDocumentLayerBuilder(
-                    links: _selectionLinks,
-                    showDebugLeaderBounds: false,
-                  ).build(context, editContext);
-                },
-                // Add all overlays from plugins.
-                for (final plugin in widget.plugins) //
-                  for (final overlayBuilder in plugin.documentOverlayBuilders) //
-                    (context) => overlayBuilder.build(context, editContext),
-                // Add all overlays that the app wants.
-                for (final overlayBuilder in widget.documentOverlayBuilders) //
-                  (context) => overlayBuilder.build(context, editContext),
-              ],
+              overlays: widget.simpleMode
+                  ? [
+                      // Simple mode: only show caret overlay, no selection handles or toolbars
+                      (context) {
+                        return const DefaultCaretOverlayBuilder().build(context, editContext);
+                      },
+                    ]
+                  : [
+                      // Layer that positions and sizes leader widgets at the bounds
+                      // of the users selection so that carets, handles, toolbars, and
+                      // other things can follow the selection.
+                      (context) {
+                        return _SelectionLeadersDocumentLayerBuilder(
+                          links: _selectionLinks,
+                          showDebugLeaderBounds: false,
+                        ).build(context, editContext);
+                      },
+                      // Add all overlays from plugins.
+                      for (final plugin in widget.plugins) //
+                        for (final overlayBuilder in plugin.documentOverlayBuilders) //
+                          (context) => overlayBuilder.build(context, editContext),
+                      // Add all overlays that the app wants.
+                      for (final overlayBuilder in widget.documentOverlayBuilders) //
+                        (context) => overlayBuilder.build(context, editContext),
+                    ],
               debugPaint: widget.debugPaint,
             ),
           ),

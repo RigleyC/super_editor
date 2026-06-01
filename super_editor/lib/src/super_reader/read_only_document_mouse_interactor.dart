@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'package:flutter/gestures.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:super_editor/src/core/document.dart';
@@ -93,13 +94,17 @@ class _ReadOnlyDocumentMouseInteractorState extends State<ReadOnlyDocumentMouseI
   final _mouseCursor = ValueNotifier<MouseCursor>(SystemMouseCursors.text);
   Offset? _lastHoverOffset;
 
+  // Throttle drag selection updates to at most one per frame.
+  bool _hasPendingSelectionUpdate = false;
+  bool _selectionUpdateScheduled = false;
+
   @override
   void initState() {
     super.initState();
     _focusNode = widget.focusNode ?? FocusNode();
     widget.readerContext.composer.selectionNotifier.addListener(_onSelectionChange);
     widget.autoScroller
-      ..addListener(_updateDragSelection)
+      ..addListener(_onAutoScrollSelectionUpdate)
       ..addListener(_updateMouseCursorAtLatestOffset);
     widget.contentTapHandler?.addListener(_updateMouseCursorAtLatestOffset);
   }
@@ -116,10 +121,10 @@ class _ReadOnlyDocumentMouseInteractorState extends State<ReadOnlyDocumentMouseI
     }
     if (widget.autoScroller != oldWidget.autoScroller) {
       oldWidget.autoScroller
-        ..removeListener(_updateDragSelection)
+        ..removeListener(_onAutoScrollSelectionUpdate)
         ..removeListener(_updateMouseCursorAtLatestOffset);
       widget.autoScroller
-        ..addListener(_updateDragSelection)
+        ..addListener(_onAutoScrollSelectionUpdate)
         ..addListener(_updateMouseCursorAtLatestOffset);
     }
     if (widget.contentTapHandler != oldWidget.contentTapHandler) {
@@ -136,7 +141,7 @@ class _ReadOnlyDocumentMouseInteractorState extends State<ReadOnlyDocumentMouseI
     }
     widget.readerContext.composer.selectionNotifier.removeListener(_onSelectionChange);
     widget.autoScroller
-      ..removeListener(_updateDragSelection)
+      ..removeListener(_onAutoScrollSelectionUpdate)
       ..removeListener(_updateMouseCursorAtLatestOffset);
     super.dispose();
   }
@@ -435,7 +440,7 @@ class _ReadOnlyDocumentMouseInteractorState extends State<ReadOnlyDocumentMouseI
     setState(() {
       _dragEndGlobal = details.globalPosition;
 
-      _updateDragSelection();
+      _scheduleSelectionUpdate();
 
       widget.autoScroller.setGlobalAutoScrollRegion(
         Rect.fromLTWH(_dragEndGlobal!.dx, _dragEndGlobal!.dy, 1, 1),
@@ -461,6 +466,9 @@ class _ReadOnlyDocumentMouseInteractorState extends State<ReadOnlyDocumentMouseI
   }
 
   void _onDragEnd() {
+    _hasPendingSelectionUpdate = false;
+    _selectionUpdateScheduled = false;
+
     setState(() {
       _dragStartGlobal = null;
       _dragEndGlobal = null;
@@ -468,6 +476,24 @@ class _ReadOnlyDocumentMouseInteractorState extends State<ReadOnlyDocumentMouseI
     });
 
     widget.autoScroller.disableAutoScrolling();
+  }
+
+  /// Schedules a selection update to run at most once per frame.
+  ///
+  /// Multiple drag events within the same frame will be coalesced into
+  /// a single selection update, using the latest drag position.
+  void _scheduleSelectionUpdate() {
+    _hasPendingSelectionUpdate = true;
+    if (!_selectionUpdateScheduled) {
+      _selectionUpdateScheduled = true;
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        _selectionUpdateScheduled = false;
+        if (_hasPendingSelectionUpdate && mounted) {
+          _hasPendingSelectionUpdate = false;
+          _updateDragSelection();
+        }
+      });
+    }
   }
 
   void _updateDragSelection() {
@@ -500,6 +526,10 @@ Updating drag selection:
         // Repaint the debug UI.
       });
     }
+  }
+
+  void _onAutoScrollSelectionUpdate() {
+    _scheduleSelectionUpdate();
   }
 
   void _setSelection(DocumentSelection selection) {

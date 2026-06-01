@@ -63,6 +63,7 @@ class SingleColumnLayoutPresenter {
     _listeners.clear();
     _document.removeListener(_onDocumentChange);
     _disassemblePipeline();
+    _viewModelCache.clear();
   }
 
   final Document _document;
@@ -70,6 +71,7 @@ class SingleColumnLayoutPresenter {
   final List<SingleColumnLayoutStylePhase> _pipeline;
   final List<SingleColumnLayoutViewModel?> _phaseViewModels = [];
   int _earliestDirtyPhase = 0;
+  final Map<String, SingleColumnLayoutComponentViewModel> _viewModelCache = {};
 
   bool get isDirty => _earliestDirtyPhase < _pipeline.length;
 
@@ -86,14 +88,27 @@ class SingleColumnLayoutPresenter {
     _listeners.remove(listener);
   }
 
-  void _onDocumentChange(_) {
-    editorLayoutLog.info("The document changed. Marking the presenter dirty.");
+  void _onDocumentChange(DocumentChangeLog changeLog) {
+    editorLayoutLog.infoLazy(() => "The document changed. Marking the presenter dirty.");
     final wasDirty = isDirty;
 
-    _earliestDirtyPhase = 0;
+    final affectedNodeIds = <String>{};
+    for (final change in changeLog.changes) {
+      if (change is NodeDocumentChange) {
+        affectedNodeIds.add(change.nodeId);
+      }
+    }
+
+    if (affectedNodeIds.isNotEmpty) {
+      for (final nodeId in affectedNodeIds) {
+        _viewModelCache.remove(nodeId);
+      }
+      _earliestDirtyPhase = 0;
+    } else {
+      _earliestDirtyPhase = 0;
+    }
 
     if (!wasDirty) {
-      // The presenter just went from clean to dirty. Notify listeners.
       for (final listener in _listeners) {
         listener.onPresenterMarkedDirty();
       }
@@ -118,7 +133,7 @@ class SingleColumnLayoutPresenter {
           _earliestDirtyPhase = phaseIndex;
         }
 
-        editorLayoutLog.info("Presenter phase ($phaseIndex) is dirty.");
+        editorLayoutLog.infoLazy(() => "Presenter phase ($phaseIndex) is dirty.");
 
         if (!wasDirty) {
           // The presenter just went from clean to dirty. Notify listeners.
@@ -137,18 +152,18 @@ class SingleColumnLayoutPresenter {
   }
 
   void updateViewModel() {
-    editorLayoutLog.info("Calculating an updated view model for document layout.");
+    editorLayoutLog.infoLazy(() => "Calculating an updated view model for document layout.");
     if (_earliestDirtyPhase == _pipeline.length) {
-      editorLayoutLog.fine("The presenter is already up to date");
+      editorLayoutLog.fineLazy(() => "The presenter is already up to date");
       return;
     }
 
-    editorLayoutLog.fine("Earliest dirty phase is: $_earliestDirtyPhase. Phase count: ${_pipeline.length}");
+    editorLayoutLog.fineLazy(() => "Earliest dirty phase is: $_earliestDirtyPhase. Phase count: ${_pipeline.length}");
 
     final oldViewModel = _viewModel;
     _viewModel = _createNewViewModel();
 
-    editorLayoutLog.info("Done calculating new document layout view model");
+    editorLayoutLog.infoLazy(() => "Done calculating new document layout view model");
 
     _notifyListenersOfChanges(
       oldViewModel: oldViewModel,
@@ -157,24 +172,28 @@ class SingleColumnLayoutPresenter {
   }
 
   SingleColumnLayoutViewModel _createNewViewModel() {
-    editorLayoutLog.fine("Running layout presenter pipeline");
-    // (Re)generate all dirty phases.
+    editorLayoutLog.fineLazy(() => "Running layout presenter pipeline");
     SingleColumnLayoutViewModel? newViewModel = _getCleanCachedViewModel();
 
     if (newViewModel == null) {
-      // The document changed. All view models were invalidated. Create a
-      // new base document view model.
       final viewModels = <SingleColumnLayoutComponentViewModel>[];
       for (final node in _document) {
         SingleColumnLayoutComponentViewModel? viewModel;
-        for (final builder in _componentBuilders) {
-          viewModel = builder.createViewModel(_document, node);
-          if (viewModel != null) {
-            break;
+
+        final cachedViewModel = _viewModelCache[node.id];
+        if (cachedViewModel != null) {
+          viewModel = cachedViewModel;
+        } else {
+          for (final builder in _componentBuilders) {
+            viewModel = builder.createViewModel(_document, node);
+            if (viewModel != null) {
+              break;
+            }
           }
-        }
-        if (viewModel == null) {
-          throw Exception("Couldn't find styler to create component for document node: ${node.runtimeType}");
+          if (viewModel == null) {
+            throw Exception("Couldn't find styler to create component for document node: ${node.runtimeType}");
+          }
+          _viewModelCache[node.id] = viewModel;
         }
         viewModels.add(viewModel);
       }
@@ -184,14 +203,12 @@ class SingleColumnLayoutPresenter {
       );
     }
 
-    // Style the document view model.
     for (int i = _earliestDirtyPhase; i < _pipeline.length; i += 1) {
-      editorLayoutLog.fine("Running phase $i: ${_pipeline[i]}");
+      editorLayoutLog.fineLazy(() => "Running phase $i: ${_pipeline[i]}");
       newViewModel = _pipeline[i].style(_document, newViewModel!);
-      editorLayoutLog.fine("Storing phase $i view model");
+      editorLayoutLog.fineLazy(() => "Storing phase $i view model");
       _phaseViewModels[i] = newViewModel;
     }
-    // We're all clean.
     _earliestDirtyPhase = _pipeline.length;
 
     return newViewModel!;
@@ -207,7 +224,7 @@ class SingleColumnLayoutPresenter {
     required SingleColumnLayoutViewModel oldViewModel,
     required SingleColumnLayoutViewModel newViewModel,
   }) {
-    editorLayoutLog.finer("Computing layout view model changes to notify listeners of those changes.");
+    editorLayoutLog.finerLazy(() => "Computing layout view model changes to notify listeners of those changes.");
 
     final addedComponents = <String>[];
     final movedComponents = <String>[];
@@ -242,22 +259,22 @@ class SingleColumnLayoutPresenter {
 
       if (!nodeIdToComponentMap.containsKey(nodeId)) {
         // This component is new.
-        editorLayoutLog.fine("New component was added for node $nodeId");
+        editorLayoutLog.fineLazy(() => "New component was added for node $nodeId");
         changeMap[nodeId] = 3;
         continue;
       }
 
       if (nodeIdToPreviousOrderMap[nodeId] != i) {
         // This component moved somewhere else. Mark this view model as changed.
-        editorLayoutLog.fine(
-            "Component for node $nodeId was at index ${nodeIdToPreviousOrderMap[nodeId]} but now it's at $i, marking the view model as changed");
+        editorLayoutLog.fineLazy(
+            () => "Component for node $nodeId was at index ${nodeIdToPreviousOrderMap[nodeId]} but now it's at $i, marking the view model as changed");
         changeMap[nodeId] = 2;
         continue;
       }
 
       if (nodeIdToComponentMap[nodeId] == newComponent) {
         // The component hasn't changed.
-        editorLayoutLog.fine("Component for node $nodeId didn't change at all");
+        editorLayoutLog.fineLazy(() => "Component for node $nodeId didn't change at all");
         changeMap[nodeId] = 0;
         continue;
       }
@@ -265,7 +282,7 @@ class SingleColumnLayoutPresenter {
       if (nodeIdToComponentMap[nodeId].runtimeType == newComponent.runtimeType) {
         // The component still exists, but it changed.
         editorLayoutLog
-            .fine("Component for node $nodeId is the same runtime type, but changed content. Marking as changed.");
+            .fineLazy(() => "Component for node $nodeId is the same runtime type, but changed content. Marking as changed.");
         changeMap[nodeId] = 1;
         continue;
       }
@@ -273,7 +290,7 @@ class SingleColumnLayoutPresenter {
       // The component has changed type, e.g., from an Image to a
       // Paragraph. This can happen as a result of deletions. Treat
       // this as a component removal.
-      editorLayoutLog.fine("Component for node $nodeId at index $i was removed");
+      editorLayoutLog.fineLazy(() => "Component for node $nodeId at index $i was removed");
       changeMap[nodeId] = -1;
     }
 
@@ -305,15 +322,15 @@ class SingleColumnLayoutPresenter {
 
     if (addedComponents.isEmpty && movedComponents.isEmpty && changedComponents.isEmpty && removedComponents.isEmpty) {
       // No changes to report.
-      editorLayoutLog.fine("Nothing has changed in the view model. Not notifying any listeners.");
+      editorLayoutLog.fineLazy(() => "Nothing has changed in the view model. Not notifying any listeners.");
       return;
     }
 
-    editorLayoutLog.fine("Notifying layout presenter listeners of changes:");
-    editorLayoutLog.fine(" - added: $addedComponents");
-    editorLayoutLog.fine(" - added: $movedComponents");
-    editorLayoutLog.fine(" - changed: $changedComponents");
-    editorLayoutLog.fine(" - removed: $removedComponents");
+    editorLayoutLog.fineLazy(() => "Notifying layout presenter listeners of changes:");
+    editorLayoutLog.fineLazy(() => " - added: $addedComponents");
+    editorLayoutLog.fineLazy(() => " - added: $movedComponents");
+    editorLayoutLog.fineLazy(() => " - changed: $changedComponents");
+    editorLayoutLog.fineLazy(() => " - removed: $removedComponents");
     for (final listener in _listeners.toList()) {
       listener.onViewModelChange(
         addedComponents: addedComponents,
@@ -404,7 +421,7 @@ abstract class SingleColumnLayoutStylePhase {
   /// Marks this phase as needing to re-run its view model calculations.
   @protected
   void markDirty() {
-    editorLayoutLog.info("Marking a layout phase as dirty: $runtimeType");
+    editorLayoutLog.infoLazy(() => "Marking a layout phase as dirty: $runtimeType");
     _dirtyCallback?.call();
   }
 

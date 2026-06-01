@@ -93,6 +93,9 @@ class AttributedText {
 
       _textWithPlaceholders = buffer.toString();
     }
+
+    // Cache the default plain text representation for fast repeated access.
+    _plainTextCache = _textWithPlaceholders;
   }
 
   void _validatePlaceholderIndices() {
@@ -124,6 +127,9 @@ class AttributedText {
   final String _text;
 
   late final String _textWithPlaceholders;
+
+  /// Cached plain text representation (with placeholders) for fast repeated access.
+  late final String _plainTextCache;
 
   /// Returns the character or placeholder at offset zero.
   Object get first => placeholders[0] ?? _textWithPlaceholders[0];
@@ -158,7 +164,7 @@ class AttributedText {
         return _textWithPlaceholders.replaceAll(placeholderCharacter, replacementCharacter);
       }
 
-      return _textWithPlaceholders;
+      return _plainTextCache;
     }
 
     return _text;

@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:follow_the_leader/follow_the_leader.dart';
 import 'package:super_editor/src/core/document.dart';
 import 'package:super_editor/src/core/document_composer.dart';
@@ -366,6 +367,10 @@ class _IosDocumentTouchInteractorState extends State<IosDocumentTouchInteractor>
   ViewPadding? _lastInsets;
 
   final _interactor = GlobalKey();
+
+  // Throttle drag selection updates to at most one per frame.
+  bool _hasPendingSelectionUpdate = false;
+  bool _selectionUpdateScheduled = false;
 
   @override
   void initState() {
@@ -1080,7 +1085,7 @@ class _IosDocumentTouchInteractorState extends State<IosDocumentTouchInteractor>
       );
       _longPressStrategy!.onLongPressDragUpdate(fingerDocumentOffset, fingerDocumentPosition);
     } else {
-      _updateSelectionForNewDragHandleLocation();
+      _scheduleSelectionUpdate();
     }
 
     // Auto-scroll, if needed, for either handle dragging or long press dragging.
@@ -1188,6 +1193,9 @@ class _IosDocumentTouchInteractorState extends State<IosDocumentTouchInteractor>
   }
 
   void _onDragSelectionEnd() {
+    _hasPendingSelectionUpdate = false;
+    _selectionUpdateScheduled = false;
+
     if (_dragMode == DragMode.longPress) {
       _onLongPressEnd();
     } else {
@@ -1220,68 +1228,32 @@ class _IosDocumentTouchInteractorState extends State<IosDocumentTouchInteractor>
   }
 
   void _onAutoScrollChange() {
-    _updateDocumentSelectionOnAutoScrollFrame();
+    _scheduleSelectionUpdate();
     _updateMagnifierFocalPointOnAutoScrollFrame();
+  }
+
+  /// Schedules a selection update to run at most once per frame.
+  ///
+  /// Multiple drag events within the same frame will be coalesced into
+  /// a single selection update, using the latest drag position.
+  void _scheduleSelectionUpdate() {
+    _hasPendingSelectionUpdate = true;
+    if (!_selectionUpdateScheduled) {
+      _selectionUpdateScheduled = true;
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        _selectionUpdateScheduled = false;
+        if (_hasPendingSelectionUpdate && mounted) {
+          _hasPendingSelectionUpdate = false;
+          _updateSelectionForNewDragHandleLocation();
+        }
+      });
+    }
   }
 
   void _updateMagnifierFocalPointOnAutoScrollFrame() {
     if (_magnifierFocalPointInDocumentSpace.value != null) {
       _placeFocalPointNearTouchOffset();
     }
-  }
-
-  void _updateDocumentSelectionOnAutoScrollFrame() {
-    if (_dragStartInDoc == null) {
-      return;
-    }
-
-    if (_dragHandleType == null) {
-      // The user is probably doing a long-press drag. Nothing for us to do here.
-      return;
-    }
-
-    final dragEndInDoc = _interactorOffsetToDocumentOffset(_dragEndInInteractor!);
-    final dragPosition = _docLayout.getDocumentPositionNearestToOffset(dragEndInDoc);
-    editorGesturesLog.info("Selecting new position during drag: $dragPosition");
-
-    if (dragPosition == null) {
-      return;
-    }
-
-    late DocumentPosition basePosition;
-    late DocumentPosition extentPosition;
-    late SelectionChangeType changeType;
-    switch (_dragHandleType!) {
-      case HandleType.collapsed:
-        basePosition = dragPosition;
-        extentPosition = dragPosition;
-        changeType = SelectionChangeType.placeCaret;
-        break;
-      case HandleType.upstream:
-        basePosition = dragPosition;
-        extentPosition = widget.selection.value!.extent;
-        changeType = SelectionChangeType.expandSelection;
-        break;
-      case HandleType.downstream:
-        basePosition = widget.selection.value!.base;
-        extentPosition = dragPosition;
-        changeType = SelectionChangeType.expandSelection;
-        break;
-    }
-
-    widget.editor.execute([
-      ChangeSelectionRequest(
-        DocumentSelection(
-          base: basePosition,
-          extent: extentPosition,
-        ),
-        changeType,
-        SelectionReason.userInteraction,
-      ),
-      const ClearComposingRegionRequest(),
-    ]);
-
-    editorGesturesLog.fine("Selected region: ${widget.selection.value}");
   }
 
   bool _selectWordAt({

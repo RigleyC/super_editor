@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:follow_the_leader/follow_the_leader.dart';
 import 'package:overlord/follow_the_leader.dart';
@@ -525,6 +526,10 @@ class _AndroidDocumentTouchInteractorState extends State<AndroidDocumentTouchInt
   ViewPadding? _lastInsets;
 
   final _interactor = GlobalKey();
+
+  // Throttle drag selection updates to at most one per frame.
+  bool _hasPendingSelectionUpdate = false;
+  bool _selectionUpdateScheduled = false;
 
   @override
   void initState() {
@@ -1117,15 +1122,7 @@ class _AndroidDocumentTouchInteractorState extends State<AndroidDocumentTouchInt
   }
 
   void _onCaretDragPanUpdate(DragUpdateDetails details) {
-    final fingerDragDelta = _globalDragOffset! - _globalStartDragOffset!;
-    final scrollDelta = _dragStartScrollOffset! - scrollPosition.pixels;
-    final fingerDocumentPosition = _docLayout.getDocumentPositionNearestToOffset(
-      _startDragPositionOffset! + fingerDragDelta - Offset(0, scrollDelta),
-    )!;
-    if (fingerDocumentPosition != widget.selection.value!.extent) {
-      HapticFeedback.lightImpact();
-    }
-    _selectPosition(fingerDocumentPosition);
+    _scheduleSelectionUpdate();
   }
 
   void _updateLongPressSelection(DocumentSelection newSelection) {
@@ -1137,6 +1134,38 @@ class _AndroidDocumentTouchInteractorState extends State<AndroidDocumentTouchInt
     // Note: this needs to happen even when the selection doesn't change, in case
     // some controls, like a magnifier, need to follower the user's finger.
     _updateOverlayControlsOnLongPressDrag();
+  }
+
+  /// Schedules a selection update to run at most once per frame.
+  ///
+  /// Multiple drag events within the same frame will be coalesced into
+  /// a single selection update, using the latest drag position.
+  void _scheduleSelectionUpdate() {
+    _hasPendingSelectionUpdate = true;
+    if (!_selectionUpdateScheduled) {
+      _selectionUpdateScheduled = true;
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        _selectionUpdateScheduled = false;
+        if (_hasPendingSelectionUpdate && mounted) {
+          _hasPendingSelectionUpdate = false;
+          _applyCaretDragSelection();
+        }
+      });
+    }
+  }
+
+  void _applyCaretDragSelection() {
+    if (_globalDragOffset == null || _globalStartDragOffset == null) return;
+    final fingerDragDelta = _globalDragOffset! - _globalStartDragOffset!;
+    final scrollDelta = _dragStartScrollOffset! - scrollPosition.pixels;
+    final fingerDocumentPosition = _docLayout.getDocumentPositionNearestToOffset(
+      _startDragPositionOffset! + fingerDragDelta - Offset(0, scrollDelta),
+    );
+    if (fingerDocumentPosition == null) return;
+    if (fingerDocumentPosition != widget.selection.value!.extent) {
+      HapticFeedback.lightImpact();
+    }
+    _selectPosition(fingerDocumentPosition);
   }
 
   void _updateOverlayControlsOnLongPressDrag() {
@@ -1194,6 +1223,8 @@ class _AndroidDocumentTouchInteractorState extends State<AndroidDocumentTouchInt
 
   void _onCaretDragEnd() {
     _isCaretDragInProgress = false;
+    _hasPendingSelectionUpdate = false;
+    _selectionUpdateScheduled = false;
 
     _magnifierGlobalOffset.value = null;
 

@@ -21,6 +21,11 @@ class BoxContentLayers extends ContentLayers {
 /// `RenderObject` for a [BoxContentLayers] widget.
 ///
 /// Must be given an `Element` of type [ContentLayersElement].
+///
+/// ## Overlay Caching
+///
+/// Tracks [contentLayoutGeneration] so that [ContentLayerState] widgets can
+/// cache their layout data and skip redundant [computeLayoutData] calls.
 class RenderBoxContentLayers extends RenderBox implements RenderContentLayers {
   RenderBoxContentLayers(this._element);
 
@@ -39,6 +44,22 @@ class RenderBoxContentLayers extends RenderBox implements RenderContentLayers {
   @override
   bool get contentNeedsLayout => _contentNeedsLayout;
   bool _contentNeedsLayout = true;
+
+  @override
+  int contentLayoutGeneration = 0;
+
+  @override
+  Size? lastContentLayoutSize;
+
+  @override
+  void invalidateContentLayoutCache() {
+    contentLayoutGeneration += 1;
+  }
+
+  @override
+  void recordContentLayoutSize(Size size) {
+    lastContentLayoutSize = size;
+  }
 
   /// Whether we are in the middle of a [performLayout] call.
   bool _runningLayout = false;
@@ -197,6 +218,10 @@ class RenderBoxContentLayers extends RenderBox implements RenderContentLayers {
 
     // The size of the layers, and the our size, is exactly the same as the content.
     size = _content!.size;
+
+    // Bump the content layout generation so layers can detect the change.
+    invalidateContentLayoutCache();
+    recordContentLayoutSize(size);
 
     _contentNeedsLayout = false;
 

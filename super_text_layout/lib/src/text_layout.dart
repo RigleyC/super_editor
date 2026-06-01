@@ -205,6 +205,47 @@ class RenderParagraphProseTextLayout implements ProseTextLayout {
 
   late final String _plainText;
 
+  // Cache: total boxes from a full-selection query (getLineCount, isTextAtOffset).
+  List<TextBox>? _cachedFullSelectionBoxes;
+
+  // Cache: character box lookup results (position -> TextBox).
+  final Map<int, TextBox?> _characterBoxCache = {};
+
+  // Cache: bounding boxes for the entire component (isTextAtOffset hit-test).
+  List<Rect>? _cachedFullBounds;
+
+  // Track the size at which caches were populated to detect layout changes.
+  Size _cachedRenderSize = Size.zero;
+
+  /// Returns whether the layout has changed since the last cache fill.
+  bool get _needsCacheRefresh {
+    if (_renderParagraph.needsLayout) return true;
+    if (_cachedRenderSize != _renderParagraph.size) return true;
+    return false;
+  }
+
+  /// Lazily computes and returns the cached list of boxes for the full text selection.
+  List<TextBox> get _cachedFullSelectionBoxesInternal {
+    if (_needsCacheRefresh) {
+      _cachedFullSelectionBoxes = _renderParagraph.getBoxesForSelection(
+        TextSelection(baseOffset: 0, extentOffset: _textLength),
+      );
+      _cachedFullBounds = _cachedFullSelectionBoxes!
+          .map((box) => box.toRect())
+          .toList(growable: false);
+      _cachedRenderSize = _renderParagraph.size;
+    }
+    return _cachedFullSelectionBoxes!;
+  }
+
+  /// Lazily computes and returns the cached bounding rects for the full text.
+  List<Rect> get _cachedFullBoundsInternal {
+    if (_needsCacheRefresh) {
+      _cachedFullSelectionBoxesInternal; // triggers full cache refresh
+    }
+    return _cachedFullBounds!;
+  }
+
   TextScaler get textScaler => _renderParagraph.textScaler;
 
   @override
@@ -275,12 +316,7 @@ class RenderParagraphProseTextLayout implements ProseTextLayout {
       return 0;
     }
 
-    return _renderParagraph
-        .getBoxesForSelection(TextSelection(
-          baseOffset: 0,
-          extentOffset: _textLength,
-        ))
-        .length;
+    return _cachedFullSelectionBoxesInternal.length;
   }
 
   @override
@@ -340,14 +376,19 @@ class RenderParagraphProseTextLayout implements ProseTextLayout {
       return const TextBox.fromLTRBD(0, 0, 0, 0, TextDirection.ltr);
     }
 
-    final plainText = _richText.toPlainText();
-    if (plainText.isEmpty) {
+    if (_plainText.isEmpty) {
       final lineHeightEstimate = _renderParagraph.getFullHeightForCaret(const TextPosition(offset: 0));
       return TextBox.fromLTRBD(0, 0, 0, lineHeightEstimate, TextDirection.ltr);
     }
 
     // Ensure that the given TextPosition does not exceed available text length.
-    var characterPosition = position.offset >= plainText.length ? TextPosition(offset: plainText.length - 1) : position;
+    var characterPosition = position.offset >= _plainText.length ? TextPosition(offset: _plainText.length - 1) : position;
+
+    // Check cache first.
+    final cached = _characterBoxCache[characterPosition.offset];
+    if (cached != null) {
+      return cached;
+    }
 
     var boxes = _renderParagraph.getBoxesForSelection(TextSelection(
       baseOffset: characterPosition.offset,
@@ -383,10 +424,13 @@ class RenderParagraphProseTextLayout implements ProseTextLayout {
     }
 
     if (boxes.isEmpty) {
+      _characterBoxCache[characterPosition.offset] = null;
       return null;
     }
 
-    return boxes.first;
+    final result = boxes.first;
+    _characterBoxCache[position.offset] = result;
+    return result;
   }
 
   @override
@@ -489,7 +533,7 @@ class RenderParagraphProseTextLayout implements ProseTextLayout {
 
   @override
   TextSelection expandSelection(TextPosition position, TextExpansion expansion, TextAffinity affinity) {
-    return expansion(_richText.toPlainText(), position, affinity);
+    return expansion(_plainText, position, affinity);
   }
 
   @override
@@ -498,15 +542,8 @@ class RenderParagraphProseTextLayout implements ProseTextLayout {
       return false;
     }
 
-    List<TextBox> boxes = _renderParagraph.getBoxesForSelection(
-      TextSelection(
-        baseOffset: 0,
-        extentOffset: _textLength,
-      ),
-    );
-
-    for (final box in boxes) {
-      if (box.toRect().contains(localOffset)) {
+    for (final rect in _cachedFullBoundsInternal) {
+      if (rect.contains(localOffset)) {
         return true;
       }
     }

@@ -158,6 +158,60 @@ void printLog(logging.LogRecord record) {
       '(${record.time.second}.${record.time.millisecond.toString().padLeft(3, '0')}) ${record.loggerName} > ${record.level.name}: ${record.message}');
 }
 
+/// Extension on [Logger] that adds lazy evaluation methods.
+///
+/// These methods only evaluate the message closure when the log level
+/// is enabled, avoiding expensive string interpolation in hot paths
+/// like layout, selection, and content layers.
+extension LazyLogger on logging.Logger {
+  /// Logs a message only if the [Level.FINE] level is enabled.
+  ///
+  /// Use this for expensive log messages in hot paths:
+  /// ```dart
+  /// logger.fineLazy(() => "Expensive: $computeExpensiveValue()");
+  /// ```
+  void fineLazy(String Function() message) {
+    if (isLoggable(logging.Level.FINE)) {
+      fine(message());
+    }
+  }
+
+  /// Logs a message only if the [Level.FINER] level is enabled.
+  void finerLazy(String Function() message) {
+    if (isLoggable(logging.Level.FINER)) {
+      finer(message());
+    }
+  }
+
+  /// Logs a message only if the [Level.FINEST] level is enabled.
+  void finestLazy(String Function() message) {
+    if (isLoggable(logging.Level.FINEST)) {
+      finest(message());
+    }
+  }
+
+  /// Logs a message only if the [Level.INFO] level is enabled.
+  void infoLazy(String Function() message) {
+    if (isLoggable(logging.Level.INFO)) {
+      info(message());
+    }
+  }
+
+  /// Logs a message only if the [Level.WARNING] level is enabled.
+  void warningLazy(String Function() message) {
+    if (isLoggable(logging.Level.WARNING)) {
+      warning(message());
+    }
+  }
+
+  /// Logs a message only if the [Level.SEVERE] level is enabled.
+  void severeLazy(String Function() message) {
+    if (isLoggable(logging.Level.SEVERE)) {
+      severe(message());
+    }
+  }
+}
+
 // TODO: get rid of this custom Logger when all references are replaced with logging package
 class Logger {
   static bool _printLogs = false;
