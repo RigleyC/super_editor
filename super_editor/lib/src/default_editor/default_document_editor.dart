@@ -22,7 +22,7 @@ Editor createDefaultDocumentEditor({
   bool simpleMode = false,
 }) {
   // In simple mode, use a reduced reaction pipeline for better performance
-  final reactions = simpleMode
+  final List<EditReaction> reactions = simpleMode
       ? [
           // Simplified reactions for note-taking: only essential conversions
           HeaderConversionReaction(),
@@ -30,7 +30,7 @@ Editor createDefaultDocumentEditor({
           const OrderedListItemConversionReaction(),
           const BlockquoteConversionReaction(),
         ]
-      : List.from(defaultEditorReactions);
+      : List<EditReaction>.from(defaultEditorReactions);
 
   final editor = Editor(
     editables: {
