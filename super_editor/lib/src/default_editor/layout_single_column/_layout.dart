@@ -775,18 +775,10 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
     Widget result = Padding(
       key: _boxKey,
       padding: padding,
-      child: CustomScrollView(
-        physics: const ClampingScrollPhysics(),
-        slivers: [
-          SliverList(
-            delegate: SliverChildBuilderDelegate(
-              _buildComponentAtIndex,
-              childCount: _orderedNodeIds.length,
-              addAutomaticKeepAlives: false,
-              addRepaintBoundaries: true,
-            ),
-          ),
-        ],
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: _buildDocComponents(),
       ),
     );
 
@@ -800,44 +792,34 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
     return result;
   }
 
-  /// Builds the component widget at the given [index] for the [SliverChildBuilderDelegate].
-  ///
-  /// Components are built on-demand: only when the sliver needs them for
-  /// layout or display. This avoids constructing every component upfront
-  /// for large documents.
-  Widget? _buildComponentAtIndex(BuildContext context, int index) {
-    if (index < 0 || index >= _orderedNodeIds.length) {
-      return null;
+  List<Widget> _buildDocComponents() {
+    editorLayoutLog.fineLazy(() => 'Building all document layout components');
+
+    final docComponents = <Widget>[];
+    for (final nodeId in _orderedNodeIds) {
+      final componentKey = _nodeIdsToComponentKeys[nodeId];
+      if (componentKey == null) {
+        editorLayoutLog.warningLazy(() => 'No component key for node: $nodeId');
+        docComponents.add(const SizedBox());
+        continue;
+      }
+
+      docComponents.add(
+        _PresenterComponentBuilder(
+          presenter: widget.presenter,
+          watchNode: nodeId,
+          builder: (context, newComponentViewModel) {
+            return _Component(
+              componentBuilders: widget.componentBuilders,
+              componentKey: componentKey,
+              componentViewModel: newComponentViewModel,
+            );
+          },
+        ),
+      );
     }
 
-    final nodeId = _orderedNodeIds[index];
-    final componentKey = _nodeIdsToComponentKeys[nodeId];
-
-    if (componentKey == null) {
-      editorLayoutLog.warningLazy(() => 'No component key for node: $nodeId at index $index');
-      return const SizedBox();
-    }
-
-    // Retrieve the current view model for this node.
-    final viewModel = widget.presenter.viewModel.getComponentViewModelByNodeId(nodeId);
-    if (viewModel == null) {
-      editorLayoutLog.warningLazy(() => 'No view model for node: $nodeId');
-      return const SizedBox();
-    }
-
-    editorLayoutLog.finestLazy(() => 'Building component at index $index for node: $nodeId');
-
-    return _PresenterComponentBuilder(
-      presenter: widget.presenter,
-      watchNode: nodeId,
-      builder: (context, newComponentViewModel) {
-        return _Component(
-          componentBuilders: widget.componentBuilders,
-          componentKey: componentKey,
-          componentViewModel: newComponentViewModel,
-        );
-      },
-    );
+    return docComponents;
   }
 
   /// Obtains a `GlobalKey` that should be attached to the component
