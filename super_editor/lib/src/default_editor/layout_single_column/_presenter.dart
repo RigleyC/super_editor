@@ -1,5 +1,4 @@
 import 'package:attributed_text/attributed_text.dart';
-import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:super_editor/src/core/document.dart';
@@ -63,7 +62,6 @@ class SingleColumnLayoutPresenter {
     _listeners.clear();
     _document.removeListener(_onDocumentChange);
     _disassemblePipeline();
-    _viewModelCache.clear();
   }
 
   final Document _document;
@@ -71,7 +69,6 @@ class SingleColumnLayoutPresenter {
   final List<SingleColumnLayoutStylePhase> _pipeline;
   final List<SingleColumnLayoutViewModel?> _phaseViewModels = [];
   int _earliestDirtyPhase = 0;
-  final Map<String, SingleColumnLayoutComponentViewModel> _viewModelCache = {};
 
   bool get isDirty => _earliestDirtyPhase < _pipeline.length;
 
@@ -92,21 +89,7 @@ class SingleColumnLayoutPresenter {
     editorLayoutLog.infoLazy(() => "The document changed. Marking the presenter dirty.");
     final wasDirty = isDirty;
 
-    final affectedNodeIds = <String>{};
-    for (final change in changeLog.changes) {
-      if (change is NodeDocumentChange) {
-        affectedNodeIds.add(change.nodeId);
-      }
-    }
-
-    if (affectedNodeIds.isNotEmpty) {
-      for (final nodeId in affectedNodeIds) {
-        _viewModelCache.remove(nodeId);
-      }
-      _earliestDirtyPhase = 0;
-    } else {
-      _earliestDirtyPhase = 0;
-    }
+    _earliestDirtyPhase = 0;
 
     if (!wasDirty) {
       for (final listener in _listeners) {
@@ -180,20 +163,14 @@ class SingleColumnLayoutPresenter {
       for (final node in _document) {
         SingleColumnLayoutComponentViewModel? viewModel;
 
-        final cachedViewModel = _viewModelCache[node.id];
-        if (cachedViewModel != null) {
-          viewModel = cachedViewModel;
-        } else {
-          for (final builder in _componentBuilders) {
-            viewModel = builder.createViewModel(_document, node);
-            if (viewModel != null) {
-              break;
-            }
+        for (final builder in _componentBuilders) {
+          viewModel = builder.createViewModel(_document, node);
+          if (viewModel != null) {
+            break;
           }
-          if (viewModel == null) {
-            throw Exception("Couldn't find styler to create component for document node: ${node.runtimeType}");
-          }
-          _viewModelCache[node.id] = viewModel;
+        }
+        if (viewModel == null) {
+          throw Exception("Couldn't find styler to create component for document node: ${node.runtimeType}");
         }
         viewModels.add(viewModel);
       }

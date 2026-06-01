@@ -155,9 +155,6 @@ class _DocumentMouseInteractorState extends State<DocumentMouseInteractor> with 
     }
     if (widget.autoScroller != oldWidget.autoScroller) {
       oldWidget.autoScroller
-        ..removeListener(_updateDragSelection)
-        ..removeListener(_updateMouseCursorAtLatestOffset);
-      widget.autoScroller
         ..removeListener(_onAutoScrollSelectionUpdate)
         ..removeListener(_updateMouseCursorAtLatestOffset);
       widget.autoScroller

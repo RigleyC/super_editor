@@ -731,9 +731,6 @@ abstract class ContentLayerState<WidgetType extends ContentLayerStatefulWidget, 
   LayoutDataType? get layoutData => _layoutData;
   LayoutDataType? _layoutData;
 
-  /// The content layout generation at which [_layoutData] was last computed.
-  int _cachedGeneration = -1;
-
   /// Traditional build method for this widget - this method should not be overridden
   /// in subclasses.
   @override
@@ -743,13 +740,7 @@ abstract class ContentLayerState<WidgetType extends ContentLayerStatefulWidget, 
     final contentLayout = contentElement?.findRenderObject();
 
     if (contentLayers != null && !contentLayers.renderObject.contentNeedsLayout) {
-      final currentGeneration = contentLayers.renderObject.contentLayoutGeneration;
-      if (currentGeneration != _cachedGeneration) {
-        // Content layout changed since last compute — recompute and cache.
-        _layoutData = computeLayoutData(contentElement, contentLayout);
-        _cachedGeneration = currentGeneration;
-      }
-      // else: reuse cached _layoutData — content layout unchanged.
+      _layoutData = computeLayoutData(contentElement, contentLayout);
     }
 
     return doBuild(context, _layoutData);
