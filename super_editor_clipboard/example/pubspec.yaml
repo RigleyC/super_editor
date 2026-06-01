@@ -13,11 +13,17 @@ dependencies:
   super_clipboard: ^0.9.1
   super_editor: ^0.3.0-dev.47
   super_editor_clipboard:
-    path: ../
+    git:
+      url: https://github.com/RigleyC/super_editor.git
+      ref: main
+      path: super_editor_clipboard
 
 dependency_overrides:
   super_editor:
-    path: ../../super_editor
+    git:
+      url: https://github.com/RigleyC/super_editor.git
+      ref: main
+      path: super_editor
 
 dev_dependencies:
   integration_test:

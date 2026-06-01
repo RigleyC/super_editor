@@ -36,9 +36,11 @@ packages:
   attributed_text:
     dependency: "direct overridden"
     description:
-      path: "../../attributed_text"
-      relative: true
-    source: path
+      path: attributed_text
+      ref: main
+      resolved-ref: c8033f1fee0c8de9f1e79210b7a9b3161067e245
+      url: "https://github.com/RigleyC/super_editor.git"
+    source: git
     version: "0.4.7"
   boolean_selector:
     dependency: transitive
@@ -572,9 +574,11 @@ packages:
   super_editor:
     dependency: "direct main"
     description:
-      path: ".."
-      relative: true
-    source: path
+      path: super_editor
+      ref: main
+      resolved-ref: c8033f1fee0c8de9f1e79210b7a9b3161067e245
+      url: "https://github.com/RigleyC/super_editor.git"
+    source: git
     version: "0.3.0-dev.51"
   super_keyboard:
     dependency: transitive
@@ -587,9 +591,11 @@ packages:
   super_text_layout:
     dependency: "direct main"
     description:
-      path: "../../super_text_layout"
-      relative: true
-    source: path
+      path: super_text_layout
+      ref: main
+      resolved-ref: c8033f1fee0c8de9f1e79210b7a9b3161067e245
+      url: "https://github.com/RigleyC/super_editor.git"
+    source: git
     version: "0.1.20"
   term_glyph:
     dependency: transitive

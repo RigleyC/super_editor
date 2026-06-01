@@ -10,23 +10,30 @@ dependencies:
     sdk: flutter
 
   super_editor:
-    path: ../../super_editor
+    git:
+      url: https://github.com/RigleyC/super_editor.git
+      ref: main
+      path: super_editor
 
   super_editor_spellcheck:
-    # When depending on this package from a real application you should use:
-    #   super_editor_spellcheck: ^x.y.z
-    # See https://dart.dev/tools/pub/dependencies#version-constraints
-    # The example app is bundled with the plugin so we use a path dependency on
-    # the parent directory to use the current plugin's version.
-    path: ../
+    git:
+      url: https://github.com/RigleyC/super_editor.git
+      ref: main
+      path: super_editor_spellcheck
 
   cupertino_icons: ^1.0.6
 
 dependency_overrides:
   super_editor:
-    path: ../../super_editor
+    git:
+      url: https://github.com/RigleyC/super_editor.git
+      ref: main
+      path: super_editor
   super_text_layout:
-    path: ../../super_text_layout
+    git:
+      url: https://github.com/RigleyC/super_editor.git
+      ref: main
+      path: super_text_layout
   url_launcher_android: 6.3.16
 
 dev_dependencies:

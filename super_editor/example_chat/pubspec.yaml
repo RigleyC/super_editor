@@ -16,7 +16,10 @@ dependencies:
   cupertino_icons: ^1.0.8
 
   super_editor:
-    path: ../
+    git:
+      url: https://github.com/RigleyC/super_editor.git
+      ref: main
+      path: super_editor
   super_keyboard: ^0.4.0
 
 dev_dependencies:
