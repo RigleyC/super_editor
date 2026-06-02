@@ -256,6 +256,12 @@ class SuperEditorImeInteractorState extends State<SuperEditorImeInteractor> impl
   // way to handle that scenario, then get rid of this property.
   final _documentImeConnection = ValueNotifier<TextInputConnection?>(null);
 
+  // Cache of the last values reported to the IME to avoid redundant platform
+  // calls in the 60Hz _reportVisualInformationToIme loop.
+  Size? _lastReportedImeSize;
+  Matrix4? _lastReportedImeTransform;
+  Rect? _lastReportedImeCaretRect;
+
   @override
   void initState() {
     super.initState();
@@ -526,7 +532,27 @@ class SuperEditorImeInteractorState extends State<SuperEditorImeInteractor> impl
       transform = renderSliver.getTransformTo(null);
     }
 
+    // Skip the platform call if nothing changed since last report.
+    // During caret blinking (and other non-layout events), this fires at
+    // 60Hz but size and transform are identical every frame.
+    if (size == _lastReportedImeSize && _transformsEqual(transform, _lastReportedImeTransform)) {
+      return;
+    }
+    _lastReportedImeSize = size;
+    _lastReportedImeTransform = transform;
+
     SuperIme.instance.getImeConnectionForOwner(_myImeId)!.setEditableSizeAndTransform(size, transform);
+  }
+
+  /// Returns `true` if [a] and [b] represent the same affine transform.
+  bool _transformsEqual(Matrix4 a, Matrix4? b) {
+    if (b == null) return false;
+    final sa = a.storage;
+    final sb = b.storage;
+    for (int i = 0; i < 16; i++) {
+      if (sa[i] != sb[i]) return false;
+    }
+    return true;
   }
 
   void _reportCaretRectToIme() {
@@ -539,7 +565,15 @@ class SuperEditorImeInteractorState extends State<SuperEditorImeInteractor> impl
 
     final caretRect = _computeCaretRectInViewportSpace();
     if (caretRect != null) {
+      // Skip the platform call if the caret rect hasn't changed.
+      // The caret blinks every ~500ms, but its rect stays constant between blinks.
+      if (caretRect == _lastReportedImeCaretRect) {
+        return;
+      }
+      _lastReportedImeCaretRect = caretRect;
       SuperIme.instance.getImeConnectionForOwner(_myImeId)!.setCaretRect(caretRect);
+    } else {
+      _lastReportedImeCaretRect = null;
     }
   }
 
