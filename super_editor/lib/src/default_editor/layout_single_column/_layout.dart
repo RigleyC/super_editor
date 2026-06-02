@@ -589,18 +589,23 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
   }
 
   GlobalKey? _findComponentAtOffset(Offset documentOffset) {
-    for (final componentKey in _nodeIdsToComponentKeys.values) {
-      if (componentKey.currentState is! DocumentComponent) {
-        continue;
-      }
-      if (componentKey.currentContext == null || componentKey.currentContext!.findRenderObject() == null) {
-        continue;
-      }
-
-      final textBox = componentKey.currentContext!.findRenderObject() as RenderBox;
-      if (_isOffsetInComponent(textBox, documentOffset)) {
-        return componentKey;
-      }
+    // Use the existing binary search (O(log N)) to find the component by
+    // vertical position instead of the previous O(N) linear scan over the
+    // unordered _nodeIdsToComponentKeys map.
+    final index = _findComponentIndexAtOffset(documentOffset.dy);
+    if (index < 0 || index >= _topToBottomComponentKeys.length) {
+      return null;
+    }
+    final componentKey = _topToBottomComponentKeys[index];
+    if (componentKey.currentState is! DocumentComponent) {
+      return null;
+    }
+    if (componentKey.currentContext == null || componentKey.currentContext!.findRenderObject() == null) {
+      return null;
+    }
+    final textBox = componentKey.currentContext!.findRenderObject() as RenderBox;
+    if (_isOffsetInComponent(textBox, documentOffset)) {
+      return componentKey;
     }
     return null;
   }

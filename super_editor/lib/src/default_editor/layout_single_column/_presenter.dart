@@ -203,6 +203,15 @@ class SingleColumnLayoutPresenter {
   }) {
     editorLayoutLog.finerLazy(() => "Computing layout view model changes to notify listeners of those changes.");
 
+    // Fast-path: if the presenter reused the exact same view model object,
+    // there can be no changes. Skip all 7 collection allocations and the O(N)
+    // diff loop — this is the common case when selection changes but document
+    // content has not changed.
+    if (identical(oldViewModel, newViewModel)) {
+      editorLayoutLog.fineLazy(() => "Old and new view models are identical — no changes to report.");
+      return;
+    }
+
     final addedComponents = <String>[];
     final movedComponents = <String>[];
     final removedComponents = <String>[];
