@@ -1046,7 +1046,11 @@ class _Component extends StatelessWidget {
           ),
         );
 
-        return showDebugPaint ? _wrapWithDebugWidget(component) : component;
+        // Isolate each component into its own repaint layer so that a single-node
+        // edit (e.g. typing one character) doesn't repaint the entire document.
+        return RepaintBoundary(
+          child: showDebugPaint ? _wrapWithDebugWidget(component) : component,
+        );
       }
     }
     return const SizedBox();

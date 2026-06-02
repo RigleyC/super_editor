@@ -575,15 +575,17 @@ class _DocumentMouseInteractorState extends State<DocumentMouseInteractor> with 
     editorGesturesLog
         .info("Pan update on document, global offset: ${details.globalPosition}, device: $_panGestureDevice");
 
-    setState(() {
-      _dragEndGlobal = details.globalPosition;
+    // No setState here — _dragEndGlobal is only consumed on the next frame
+    // by _updateDragSelection (scheduled via _scheduleSelectionUpdate).
+    // Calling setState on every pointer event (100+ Hz during drag) caused
+    // 100+ redundant widget rebuilds per second with no visual benefit.
+    _dragEndGlobal = details.globalPosition;
 
-      _scheduleSelectionUpdate();
+    _scheduleSelectionUpdate();
 
-      widget.autoScroller.setGlobalAutoScrollRegion(
-        Rect.fromLTWH(_dragEndGlobal!.dx, _dragEndGlobal!.dy, 1, 1),
-      );
-    });
+    widget.autoScroller.setGlobalAutoScrollRegion(
+      Rect.fromLTWH(_dragEndGlobal!.dx, _dragEndGlobal!.dy, 1, 1),
+    );
   }
 
   void _onPanEnd(DragEndDetails details) {

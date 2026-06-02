@@ -351,6 +351,11 @@ class AutoScrollController with ChangeNotifier {
   double? _autoScrollingStartOffset;
   Rect? _autoScrollGlobalRegion;
 
+  // Guard flag: ensures at most one post-frame notifyListeners() per frame
+  // even if the ScrollPosition fires dozens of change events in one frame
+  // (e.g. during scroll momentum at 60+ events/frame).
+  bool _scrollNotifyScheduled = false;
+
   /// Returns `true` if this controller is attached a [Scrollable].
   bool get hasScrollable => _getScrollPosition != null;
 
@@ -388,7 +393,14 @@ class AutoScrollController with ChangeNotifier {
     //
     // The scroll position may trigger layout changes, notify the listeners
     // after the layout settles.
+    //
+    // Guard: only schedule one post-frame callback per frame. During momentum
+    // scrolling the ScrollPosition fires 60+ changes/frame; without this guard
+    // we'd enqueue 60+ redundant notifyListeners() callbacks per frame.
+    if (_scrollNotifyScheduled) return;
+    _scrollNotifyScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollNotifyScheduled = false;
       if (hasScrollable) {
         notifyListeners();
       }
