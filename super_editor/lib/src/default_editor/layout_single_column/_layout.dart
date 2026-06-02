@@ -804,17 +804,22 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
         continue;
       }
 
+      // Each component is wrapped in a RepaintBoundary so that scrolling
+      // and typing only repaint the affected component, not the whole
+      // document.
       docComponents.add(
-        _PresenterComponentBuilder(
-          presenter: widget.presenter,
-          watchNode: nodeId,
-          builder: (context, newComponentViewModel) {
-            return _Component(
-              componentBuilders: widget.componentBuilders,
-              componentKey: componentKey,
-              componentViewModel: newComponentViewModel,
-            );
-          },
+        RepaintBoundary(
+          child: _PresenterComponentBuilder(
+            presenter: widget.presenter,
+            watchNode: nodeId,
+            builder: (context, newComponentViewModel) {
+              return _Component(
+                componentBuilders: widget.componentBuilders,
+                componentKey: componentKey,
+                componentViewModel: newComponentViewModel,
+              );
+            },
+          ),
         ),
       );
     }
