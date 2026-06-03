@@ -268,10 +268,20 @@ class DocumentImeSerializer {
   }
 
   DocumentPosition _imeToDocumentPosition(TextPosition imePosition, {required bool isUpstream}) {
-    for (final range in imeRangesToDocTextNodes.keys) {
-      if (range.start <= imePosition.offset && imePosition.offset <= range.end) {
+    // Binary search: the keys of imeRangesToDocTextNodes are built in order
+    // so they are sorted by start offset.
+    final keys = imeRangesToDocTextNodes.keys.toList();
+    int lo = 0;
+    int hi = keys.length - 1;
+    while (lo <= hi) {
+      final mid = (lo + hi) ~/ 2;
+      final range = keys[mid];
+      if (imePosition.offset < range.start) {
+        hi = mid - 1;
+      } else if (imePosition.offset > range.end) {
+        lo = mid + 1;
+      } else {
         final node = _doc.getNodeById(imeRangesToDocTextNodes[range]!)!;
-
         if (node is TextNode) {
           return DocumentPosition(
             nodeId: imeRangesToDocTextNodes[range]!,
@@ -279,13 +289,11 @@ class DocumentImeSerializer {
           );
         } else {
           if (imePosition.offset <= range.start) {
-            // Return a position at the start of the node.
             return DocumentPosition(
               nodeId: node.id,
               nodePosition: node.beginningPosition,
             );
           } else {
-            // Return a position at the end of the node.
             return DocumentPosition(
               nodeId: node.id,
               nodePosition: node.endPosition,

@@ -499,12 +499,6 @@ class SuperEditorImeInteractorState extends State<SuperEditorImeInteractor> impl
       _reportTextStyleToIme();
     }
 
-    // There are some operations that might affect our transform, size and the caret rect,
-    // but we can't react to them.
-    // For example, the editor might be resized or moved around the screen.
-    // Because of this, we update our size, transform and caret rect at every frame.
-    // FIXME: This call seems to be scheduling frames. When the caret is in Timer mode, we see this method running continuously even though the only change should be the caret blinking every half a second
-    onNextFrame((_) => _reportVisualInformationToIme());
   }
 
   /// Report the global size and transform of the editor to the IME.

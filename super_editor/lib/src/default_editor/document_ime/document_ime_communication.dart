@@ -240,6 +240,9 @@ class DocumentImeInputClient extends TextInputConnectionDecorator with TextInput
 
   bool _isSendingToIme = false;
 
+  // Cached last-sent TextEditingValue to avoid redundant serialization.
+  TextEditingValue? _lastSentTextEditingValue;
+
   void _sendDocumentToIme() {
     if (_isApplyingDeltas) {
       editorImeLog
@@ -272,6 +275,16 @@ class DocumentImeInputClient extends TextInputConnectionDecorator with TextInput
     editorImeLog
         .fine("[DocumentImeInputClient] - Adding invisible characters?: ${imeSerialization.didPrependPlaceholder}");
     TextEditingValue textEditingValue = imeSerialization.toTextEditingValue();
+
+    // Skip the platform call if the serialized value is identical to what we
+    // last sent. This avoids redundant serialization + platform round-trips
+    // on selection-only changes (e.g. caret blink, arrow-key movement).
+    if (textEditingValue == _lastSentTextEditingValue) {
+      editorImeLog.fine("[DocumentImeInputClient] - Value unchanged, skipping IME update");
+      _isSendingToIme = false;
+      return;
+    }
+    _lastSentTextEditingValue = textEditingValue;
 
     editorImeLog.fine("[DocumentImeInputClient] - Sending IME serialization:");
     editorImeLog.fine("[DocumentImeInputClient] - $textEditingValue");

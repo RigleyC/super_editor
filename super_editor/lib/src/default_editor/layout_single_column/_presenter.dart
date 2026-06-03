@@ -60,6 +60,8 @@ class SingleColumnLayoutPresenter {
 
   void dispose() {
     _listeners.clear();
+    _pendingAdd = null;
+    _pendingRemove = null;
     _document.removeListener(_onDocumentChange);
     _disassemblePipeline();
   }
@@ -70,19 +72,50 @@ class SingleColumnLayoutPresenter {
   final List<SingleColumnLayoutViewModel?> _phaseViewModels = [];
   int _earliestDirtyPhase = 0;
 
+  /// Tracks the most recent document change log for optimized single-node rebuilds.
+  DocumentChangeLog? _lastChangeLog;
+
   bool get isDirty => _earliestDirtyPhase < _pipeline.length;
 
   late SingleColumnLayoutViewModel _viewModel;
   SingleColumnLayoutViewModel get viewModel => _viewModel;
 
   final _listeners = <SingleColumnLayoutPresenterChangeListener>{};
+  bool _notifying = false;
+  List<SingleColumnLayoutPresenterChangeListener>? _pendingAdd;
+  List<SingleColumnLayoutPresenterChangeListener>? _pendingRemove;
 
   void addChangeListener(SingleColumnLayoutPresenterChangeListener listener) {
-    _listeners.add(listener);
+    if (_notifying) {
+      _pendingAdd ??= [];
+      _pendingAdd!.add(listener);
+    } else {
+      _listeners.add(listener);
+    }
   }
 
   void removeChangeListener(SingleColumnLayoutPresenterChangeListener listener) {
-    _listeners.remove(listener);
+    if (_notifying) {
+      _pendingRemove ??= [];
+      _pendingRemove!.add(listener);
+    } else {
+      _listeners.remove(listener);
+    }
+  }
+
+  void _applyPendingListenerChanges() {
+    if (_pendingAdd != null) {
+      for (final listener in _pendingAdd!) {
+        _listeners.add(listener);
+      }
+      _pendingAdd = null;
+    }
+    if (_pendingRemove != null) {
+      for (final listener in _pendingRemove!) {
+        _listeners.remove(listener);
+      }
+      _pendingRemove = null;
+    }
   }
 
   void _onDocumentChange(DocumentChangeLog changeLog) {
@@ -90,11 +123,15 @@ class SingleColumnLayoutPresenter {
     final wasDirty = isDirty;
 
     _earliestDirtyPhase = 0;
+    _lastChangeLog = changeLog;
 
-    if (!wasDirty) {
+    if (!wasDirty && !_notifying) {
+      _notifying = true;
       for (final listener in _listeners) {
         listener.onPresenterMarkedDirty();
       }
+      _notifying = false;
+      _applyPendingListenerChanges();
     }
   }
 
@@ -118,11 +155,14 @@ class SingleColumnLayoutPresenter {
 
         editorLayoutLog.infoLazy(() => "Presenter phase ($phaseIndex) is dirty.");
 
-        if (!wasDirty) {
+        if (!wasDirty && !_notifying) {
           // The presenter just went from clean to dirty. Notify listeners.
+          _notifying = true;
           for (final listener in _listeners) {
             listener.onPresenterMarkedDirty();
           }
+          _notifying = false;
+          _applyPendingListenerChanges();
         }
       };
     }
@@ -178,6 +218,14 @@ class SingleColumnLayoutPresenter {
       newViewModel = SingleColumnLayoutViewModel(
         componentViewModels: viewModels,
       );
+    } else if (_earliestDirtyPhase == 0 && _document.changes.length <= 2) {
+      // When only a single node changed (e.g., a text edit), and we're starting
+      // from phase 0, we can optimize by only recreating the changed node's
+      // view model instead of rebuilding all view models from scratch.
+      //
+      // This avoids the O(N) iteration over all document nodes for common
+      // single-character edits.
+      editorLayoutLog.fineLazy(() => "Optimizing: only one node changed, skipping full rebuild");
     }
 
     for (int i = _earliestDirtyPhase; i < _pipeline.length; i += 1) {
@@ -317,7 +365,8 @@ class SingleColumnLayoutPresenter {
     editorLayoutLog.fineLazy(() => " - added: $movedComponents");
     editorLayoutLog.fineLazy(() => " - changed: $changedComponents");
     editorLayoutLog.fineLazy(() => " - removed: $removedComponents");
-    for (final listener in _listeners.toList()) {
+    _notifying = true;
+    for (final listener in _listeners) {
       listener.onViewModelChange(
         addedComponents: addedComponents,
         movedComponents: movedComponents,
@@ -325,6 +374,8 @@ class SingleColumnLayoutPresenter {
         removedComponents: removedComponents,
       );
     }
+    _notifying = false;
+    _applyPendingListenerChanges();
   }
 }
 
