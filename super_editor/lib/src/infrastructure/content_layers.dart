@@ -113,6 +113,9 @@ class ContentLayersElement extends RenderObjectElement {
 
   ContentLayersElement(ContentLayers widget) : super(widget);
 
+  /// Guard flag to prevent scheduling multiple frame callbacks per element per frame.
+  bool _frameCallbackScheduled = false;
+
   List<Element> _underlays = <Element>[];
   Element? _content;
   List<Element> _overlays = <Element>[];
@@ -185,6 +188,12 @@ class ContentLayersElement extends RenderObjectElement {
   void _onBuildScheduled() {
     contentLayersLog.finerLazy(() => "ON BUILD SCHEDULED");
 
+    // Guard: skip if we already scheduled a callback for this frame.
+    if (_frameCallbackScheduled) {
+      return;
+    }
+    _frameCallbackScheduled = true;
+
     // Schedule a callback to run at the beginning of the next frame so we can check
     // for dirty subtrees.
     //
@@ -199,6 +208,7 @@ class ContentLayersElement extends RenderObjectElement {
     // layer Elements, preventing Flutter from rebuilding them, and then we reactivate
     // the layers during the next layout pass, after the content is laid out.
     SchedulerBinding.instance.scheduleFrameCallback((timeStamp) {
+      _frameCallbackScheduled = false;
       contentLayersLog.finerLazy(() => "SCHEDULED FRAME CALLBACK");
       if (!mounted) {
         contentLayersLog.finerLazy(() => "We've unmounted since the end of the frame. Fizzling.");
@@ -236,7 +246,7 @@ class ContentLayersElement extends RenderObjectElement {
     return hasDirtyElements;
   }
 
-  static bool _isDirty = false;
+  bool _isDirty = false;
 
   bool _isSubtreeDirty(Element element) {
     _isDirty = false;
@@ -244,9 +254,7 @@ class ContentLayersElement extends RenderObjectElement {
     return _isDirty;
   }
 
-// This is intentionally static to prevent closure allocation during
-  // the traversal of the element tree.
-  static void _isSubtreeDirtyVisitor(Element element) {
+  void _isSubtreeDirtyVisitor(Element element) {
     // Can't use the () => message syntax because it allocates a closure.
     assert(() {
       if (contentLayersLog.isLoggable(Level.FINEST)) {
