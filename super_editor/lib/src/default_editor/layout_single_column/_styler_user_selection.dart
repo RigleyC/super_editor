@@ -72,22 +72,11 @@ class SingleColumnLayoutSelectionStyler extends SingleColumnLayoutStylePhase {
   SingleColumnLayoutViewModel style(Document document, SingleColumnLayoutViewModel viewModel) {
     editorStyleLog.info("(Re)calculating selection view model for document layout");
     editorStyleLog.fine("Applying selection to components: ${_selection.value}");
-    return SingleColumnLayoutViewModel(
-      padding: viewModel.padding,
-      componentViewModels: [
-        for (final previousViewModel in viewModel.componentViewModels) //
-          _applySelection(previousViewModel.copy()),
-      ],
-    );
-  }
 
-  SingleColumnLayoutComponentViewModel _applySelection(SingleColumnLayoutComponentViewModel viewModel) {
+    // Cache the selected nodes list once to avoid repeated O(N) calls per node.
     final documentSelection = _selection.value;
-    final node = _document.getNodeById(viewModel.nodeId)!;
-
-    DocumentNodeSelection? nodeSelection;
+    List<DocumentNode> selectedNodes = [];
     if (documentSelection != null) {
-      late List<DocumentNode> selectedNodes;
       try {
         selectedNodes = _document.getNodesInside(
           documentSelection.base,
@@ -104,6 +93,26 @@ class SingleColumnLayoutSelectionStyler extends SingleColumnLayoutStylePhase {
         //       into atomic transactions (#423)
         selectedNodes = [];
       }
+    }
+
+    return SingleColumnLayoutViewModel(
+      padding: viewModel.padding,
+      componentViewModels: [
+        for (final previousViewModel in viewModel.componentViewModels) //
+          _applySelection(previousViewModel, selectedNodes),
+      ],
+    );
+  }
+
+  SingleColumnLayoutComponentViewModel _applySelection(
+    SingleColumnLayoutComponentViewModel viewModel,
+    List<DocumentNode> selectedNodes,
+  ) {
+    final documentSelection = _selection.value;
+    final node = _document.getNodeById(viewModel.nodeId)!;
+
+    DocumentNodeSelection? nodeSelection;
+    if (documentSelection != null) {
       nodeSelection =
           _computeNodeSelection(documentSelection: documentSelection, selectedNodes: selectedNodes, node: node);
     }
@@ -132,6 +141,13 @@ class SingleColumnLayoutSelectionStyler extends SingleColumnLayoutStylePhase {
       editorStyleLog.finer('   - extent: ${textSelection?.extent}');
 
       if (viewModel is TextComponentViewModel) {
+        // Skip copy if selection state hasn't changed.
+        if (viewModel.selection == textSelection &&
+            viewModel.selectionColor == _selectionStyles.selectionColor &&
+            viewModel.highlightWhenEmpty == highlightWhenEmpty) {
+          return viewModel;
+        }
+
         final componentTextColor = viewModel.textStyleBuilder({}).color;
 
         final textWithSelectionAttributions = textSelection != null &&
@@ -151,20 +167,32 @@ class SingleColumnLayoutSelectionStyler extends SingleColumnLayoutStylePhase {
               ))
             : viewModel.text;
 
-        viewModel
+        final newViewModel = viewModel.copy() as TextComponentViewModel;
+        newViewModel
           ..text = textWithSelectionAttributions
           ..selection = textSelection
           ..selectionColor = _selectionStyles.selectionColor
           ..highlightWhenEmpty = highlightWhenEmpty;
+        return newViewModel;
       }
     }
     if (viewModel is SelectionAwareViewModelMixin) {
-      viewModel
-        ..selection = nodeSelection
-        ..selectionColor = _selectionStyles.selectionColor;
+      // Skip copy if selection state hasn't changed.
+      if (viewModel.selection == nodeSelection &&
+          viewModel.selectionColor == _selectionStyles.selectionColor) {
+        return viewModel;
+      }
+
+      final newViewModel = viewModel.copy();
+      if (newViewModel is SelectionAwareViewModelMixin) {
+        newViewModel
+          ..selection = nodeSelection
+          ..selectionColor = _selectionStyles.selectionColor;
+      }
+      return newViewModel;
     }
 
-    return viewModel;
+    return viewModel.copy();
   }
 
   /// Computes the [DocumentNodeSelection] for the individual `nodeId` based on
