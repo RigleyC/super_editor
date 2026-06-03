@@ -245,8 +245,7 @@ class ParagraphComponentViewModel extends SingleColumnLayoutComponentViewModel w
       ParagraphComponentViewModel(
         nodeId: nodeId,
         createdAt: createdAt,
-        // FIXME: Do we need to send in the `text`? Isn't the superclass already doing it?
-        text: text.copy(),
+        text: text,
         textStyleBuilder: textStyleBuilder,
         opacity: opacity,
         selectionColor: selectionColor,

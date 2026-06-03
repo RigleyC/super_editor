@@ -271,25 +271,20 @@ class Editor implements RequestDispatcher {
 
     _activeCommandCount += 1;
 
-    final undoableCommands = <EditCommand>[];
     for (final request in requests) {
       // Execute the given request.
       final command = _findCommandForRequest(request);
       final commandChanges = _executeCommand(command);
       _activeChangeList!.addAll(commandChanges);
 
-      if (command.historyBehavior == HistoryBehavior.undoable) {
-        undoableCommands.add(command);
-        _transaction!.changes.addAll(List.from(commandChanges));
+      if (isHistoryEnabled && command.historyBehavior == HistoryBehavior.undoable) {
+        _transaction!.commands.add(command);
+        _transaction!.changes.addAll(commandChanges);
       }
     }
 
     // Log the time at the end of the actions in this transaction.
     _transaction!.lastChangeTime = clock.now();
-
-    if (undoableCommands.isNotEmpty) {
-      _transaction!.commands.addAll(undoableCommands);
-    }
 
     if (_activeCommandCount == 1 && _isImplicitTransaction && !_isReacting) {
       endTransaction();
@@ -317,8 +312,8 @@ class Editor implements RequestDispatcher {
 
     // Collect all the changes from the executed commands.
     //
-    // We make a copy of the change-list so that asynchronous listeners
-    // don't lose the contents when we clear it.
+    // We return the change-list directly (no defensive copy) since all
+    // listeners are synchronous and the list is cleared after use.
     final changeList = _commandExecutor.copyChangeList();
 
     // TODO: we could run the reactions here. Do we give them all a single chance
@@ -691,7 +686,7 @@ class _DocumentEditorCommandExecutor implements CommandExecutor {
   final _commandsBeingProcessed = EditorCommandQueue();
 
   final _changeList = <EditEvent>[];
-  List<EditEvent> copyChangeList() => List.from(_changeList);
+  List<EditEvent> copyChangeList() => _changeList;
 
   @override
   void executeCommand(EditCommand command) {
@@ -1398,11 +1393,27 @@ class MutableDocument with Iterable<DocumentNode> implements Document, Editable 
 
   @override
   void onTransactionEnd(List<EditEvent> edits) {
-    final documentChanges = edits.whereType<DocumentEdit>().map((edit) => edit.change).toList();
-    if (documentChanges.isEmpty && !_didReset) {
-      return;
+    if (!_didReset) {
+      // Check for document changes before allocating a list.
+      bool hasDocumentChanges = false;
+      for (final edit in edits) {
+        if (edit is DocumentEdit) {
+          hasDocumentChanges = true;
+          break;
+        }
+      }
+      if (!hasDocumentChanges) {
+        return;
+      }
     }
     _didReset = false;
+
+    final documentChanges = <DocumentChange>[];
+    for (final edit in edits) {
+      if (edit is DocumentEdit) {
+        documentChanges.add(edit.change);
+      }
+    }
 
     final changeLog = DocumentChangeLog(documentChanges);
     for (final listener in _listeners) {

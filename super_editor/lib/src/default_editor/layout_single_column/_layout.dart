@@ -128,7 +128,7 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
     super.dispose();
   }
 
-  Future<void> _onPresenterMarkedDirty() async {
+  void _onPresenterMarkedDirty() {
     editorLayoutLog.fineLazy(() => "Layout presenter is dirty. Instructing it to update the view model.");
     widget.presenter.updateViewModel();
   }
@@ -139,13 +139,17 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
     required List<String> changedComponents,
     required List<String> removedComponents,
   }) {
-    if (addedComponents.isNotEmpty || movedComponents.isNotEmpty || removedComponents.isNotEmpty) {
+    final hasStructuralChange = addedComponents.isNotEmpty || movedComponents.isNotEmpty || removedComponents.isNotEmpty;
+    if (hasStructuralChange) {
       _componentBoundsCache.clear();
       _nodeIdToVisualIndex.clear();
       // Also clear height cache for removed nodes.
       for (final nodeId in removedComponents) {
         _nodeHeightCache.remove(nodeId);
       }
+      // Rebuild ordered node lists for structural changes.
+      _topToBottomComponentKeys.clear();
+      _rebuildOrderedNodeIds();
       setState(() {
         // Re-flow the whole layout.
       });
@@ -611,9 +615,22 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
   }
 
   GlobalKey? _findComponentClosestToOffset(Offset documentOffset) {
+    if (_topToBottomComponentKeys.isEmpty) {
+      return null;
+    }
+
+    // Use binary search to find the approximate index, then check neighbors.
+    final index = _findComponentIndexAtOffset(documentOffset.dy);
+
+    // Check the found index and its neighbors to find the closest component.
+    final start = index >= 0 ? max(0, index - 1) : 0;
+    final end = index >= 0 ? min(_topToBottomComponentKeys.length - 1, index + 1) : _topToBottomComponentKeys.length - 1;
+
     GlobalKey? nearestComponentKey;
     double nearestDistance = double.infinity;
-    for (final componentKey in _nodeIdsToComponentKeys.values) {
+
+    for (int i = start; i <= end; i++) {
+      final componentKey = _topToBottomComponentKeys[i];
       if (componentKey.currentState is! DocumentComponent) {
         continue;
       }
@@ -769,11 +786,6 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
   @override
   Widget build(BuildContext context) {
     editorLayoutLog.fineLazy(() => "Building document layout");
-
-    // Rebuild the ordered node list from the current view model.
-    _topToBottomComponentKeys.clear();
-    _nodeIdToVisualIndex.clear();
-    _rebuildOrderedNodeIds();
 
     final padding = widget.presenter.viewModel.padding;
 
