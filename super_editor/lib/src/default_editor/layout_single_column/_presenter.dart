@@ -199,73 +199,39 @@ class SingleColumnLayoutPresenter {
     SingleColumnLayoutViewModel? newViewModel = _getCleanCachedViewModel();
 
     if (newViewModel == null) {
-      // Check if we can do a single-node optimization: only one node changed
-      // and we have a previous view model to base off of.
-      if (_earliestDirtyPhase == 0 &&
-          _lastChangeLog != null &&
-          _lastChangeLog!.changes.length == 1 &&
-          _lastChangeLog!.changes[0] is NodeDocumentChange &&
-          _phaseViewModels.isNotEmpty &&
-          _phaseViewModels[0] != null) {
-        // Only one node changed - reuse the cached view model and only
-        // recreate the changed node's view model.
-        final changedNode = (_lastChangeLog!.changes[0] as NodeDocumentChange).nodeId;
-        editorLayoutLog.fineLazy(() =>
-            "Optimizing: only node $changedNode changed, reusing cached view models");
+      // Full rebuild: create view models for all nodes.
+      //
+      // We intentionally do not use the "single-node optimization" that
+      // reuses view models for unchanged nodes. That optimization breaks the
+      // change detection in `_notifyListenersOfChanges` because
+      // `ParagraphComponentViewModel` (and similar) hold an `AttributedText`
+      // reference into the underlying `DocumentNode`. When a single node
+      // changes, the old and new view models end up pointing at different
+      // `DocumentNode` instances, but if the optimization reuses the
+      // unchanged nodes' view models, the diff sees `identical`-like
+      // equality on the text and skips the change notification. A full
+      // rebuild produces a fresh view model per node with a fresh
+      // `AttributedText` reference, so the equality check correctly
+      // reports the node as changed and the UI updates.
+      final viewModels = <SingleColumnLayoutComponentViewModel>[];
+      for (final node in _document) {
+        SingleColumnLayoutComponentViewModel? viewModel;
 
-        final cachedViewModel = _phaseViewModels[0]!;
-        final newViewModels = <SingleColumnLayoutComponentViewModel>[];
-
-        for (final oldVm in cachedViewModel.componentViewModels) {
-          if (oldVm.nodeId == changedNode) {
-            // This node changed - create a fresh view model for it.
-            SingleColumnLayoutComponentViewModel? freshVm;
-            final node = _document.getNodeById(changedNode);
-            if (node != null) {
-              for (final builder in _componentBuilders) {
-                freshVm = builder.createViewModel(_document, node);
-                if (freshVm != null) {
-                  break;
-                }
-              }
-            }
-            if (freshVm != null) {
-              newViewModels.add(freshVm);
-            } else {
-              // Fallback: keep the old view model if we can't create a new one.
-              newViewModels.add(oldVm);
-            }
-          } else {
-            // Node didn't change - reuse the old view model.
-            newViewModels.add(oldVm);
+        for (final builder in _componentBuilders) {
+          viewModel = builder.createViewModel(_document, node);
+          if (viewModel != null) {
+            break;
           }
         }
-
-        newViewModel = SingleColumnLayoutViewModel(
-          componentViewModels: newViewModels,
-        );
-      } else {
-        // Full rebuild: create view models for all nodes.
-        final viewModels = <SingleColumnLayoutComponentViewModel>[];
-        for (final node in _document) {
-          SingleColumnLayoutComponentViewModel? viewModel;
-
-          for (final builder in _componentBuilders) {
-            viewModel = builder.createViewModel(_document, node);
-            if (viewModel != null) {
-              break;
-            }
-          }
-          if (viewModel == null) {
-            throw Exception("Couldn't find styler to create component for document node: ${node.runtimeType}");
-          }
-          viewModels.add(viewModel);
+        if (viewModel == null) {
+          throw Exception("Couldn't find styler to create component for document node: ${node.runtimeType}");
         }
-
-        newViewModel = SingleColumnLayoutViewModel(
-          componentViewModels: viewModels,
-        );
+        viewModels.add(viewModel);
       }
+
+      newViewModel = SingleColumnLayoutViewModel(
+        componentViewModels: viewModels,
+      );
     }
 
     for (int i = _earliestDirtyPhase; i < _pipeline.length; i += 1) {
@@ -294,10 +260,10 @@ class SingleColumnLayoutPresenter {
 
     // Fast-path: if the presenter reused the exact same view model object,
     // there can be no changes. Skip all 7 collection allocations and the O(N)
-    // diff loop — this is the common case when selection changes but document
+    // diff loop � this is the common case when selection changes but document
     // content has not changed.
     if (identical(oldViewModel, newViewModel)) {
-      editorLayoutLog.fineLazy(() => "Old and new view models are identical — no changes to report.");
+      editorLayoutLog.fineLazy(() => "Old and new view models are identical � no changes to report.");
       return;
     }
 
