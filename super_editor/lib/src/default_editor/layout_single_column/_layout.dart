@@ -108,6 +108,15 @@ class _SingleColumnDocumentLayoutState extends State<SingleColumnDocumentLayout>
     // Build the view model now, so that any further changes to the
     // presenter send us a dirty notification.
     widget.presenter.updateViewModel();
+
+    // Build the ordered node list for the initial render. The presenter
+    // dispatches its first dirty notification through `_onViewModelChange`,
+    // but that handler only rebuilds the ordered list when the view model
+    // reports structural changes (added/removed/moved components). On the
+    // initial mount the view model is produced from scratch, so there are
+    // no structural changes and the list would otherwise stay empty,
+    // causing `_buildDocComponents` to render nothing.
+    _rebuildOrderedNodeIds();
   }
 
   @override
@@ -1082,3 +1091,4 @@ class _Component extends StatelessWidget {
     );
   }
 }
+
