@@ -312,8 +312,8 @@ class Editor implements RequestDispatcher {
 
     // Collect all the changes from the executed commands.
     //
-    // We return the change-list directly (no defensive copy) since all
-    // listeners are synchronous and the list is cleared after use.
+    // We make a copy of the change-list so that the caller sees the contents
+    // before `_commandExecutor.reset()` clears the underlying list below.
     final changeList = _commandExecutor.copyChangeList();
 
     // TODO: we could run the reactions here. Do we give them all a single chance
@@ -686,7 +686,7 @@ class _DocumentEditorCommandExecutor implements CommandExecutor {
   final _commandsBeingProcessed = EditorCommandQueue();
 
   final _changeList = <EditEvent>[];
-  List<EditEvent> copyChangeList() => _changeList;
+  List<EditEvent> copyChangeList() => List.from(_changeList);
 
   @override
   void executeCommand(EditCommand command) {
