@@ -17,6 +17,7 @@ import 'package:super_editor/src/default_editor/selection_upstream_downstream.da
 import 'package:super_editor/src/default_editor/text_tools.dart';
 import 'package:super_editor/src/document_operations/selection_operations.dart';
 import 'package:super_editor/src/infrastructure/_logging.dart';
+import 'package:super_editor/src/infrastructure/documents/document_selection.dart';
 import 'package:super_editor/src/infrastructure/flutter/flutter_scheduler.dart';
 import 'package:super_editor/src/infrastructure/multi_tap_gesture.dart';
 import 'package:super_editor/src/infrastructure/sliver_hybrid_stack.dart';
@@ -388,6 +389,10 @@ class _DocumentMouseInteractorState extends State<DocumentMouseInteractor> with 
       }
 
       if (!didSelectContent) {
+        didSelectContent = selectContentUnitAt(widget.editor, _docLayout, docOffset);
+      }
+
+      if (!didSelectContent) {
         // Place the document selection at the location where the
         // user tapped.
         _selectPosition(docPosition);
@@ -494,7 +499,15 @@ class _DocumentMouseInteractorState extends State<DocumentMouseInteractor> with 
         docPosition: docPosition,
         docLayout: _docLayout,
       );
-      if (!didSelectParagraph) {
+
+      final didSelectComponent = !didSelectParagraph &&
+          selectComponentAt(
+            widget.editor,
+            documentPosition: docPosition,
+            documentLayout: _docLayout,
+          );
+
+      if (!didSelectParagraph && !didSelectComponent) {
         // Place the document selection at the location where the
         // user tapped.
         _selectPosition(docPosition);
