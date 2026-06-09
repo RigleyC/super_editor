@@ -2,7 +2,7 @@ group = "com.flutterbountyhunters.superkeyboard.super_keyboard"
 version = "1.0-SNAPSHOT"
 
 buildscript {
-    ext.kotlin_version = "1.7.10"
+    ext.kotlin_version = "2.2.20"
     repositories {
         google()
         mavenCentral()
