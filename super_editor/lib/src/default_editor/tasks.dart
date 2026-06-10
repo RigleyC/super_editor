@@ -658,6 +658,18 @@ class InsertNewlineInTaskAtCaretCommand extends BaseInsertNewlineAtCaretCommand 
       executor.executeCommand(
         ConvertTaskToParagraphCommand(nodeId: node.id),
       );
+      executor.executeCommand(
+        ChangeSelectionCommand(
+          DocumentSelection.collapsed(
+            position: DocumentPosition(
+              nodeId: node.id,
+              nodePosition: const TextNodePosition(offset: 0),
+            ),
+          ),
+          SelectionChangeType.insertContent,
+          SelectionReason.userInteraction,
+        ),
+      );
       return;
     }
 

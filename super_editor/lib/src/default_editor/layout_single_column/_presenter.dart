@@ -75,6 +75,12 @@ class SingleColumnLayoutPresenter {
   /// Tracks the most recent document change log for optimized single-node rebuilds.
   DocumentChangeLog? _lastChangeLog;
 
+  /// Monotonically increasing version counter, bumped on every document change.
+  ///
+  /// Stamped onto [SingleColumnLayoutComponentViewModel.documentVersion] so that
+  /// style phases can detect stale view models and avoid skipping copies.
+  int _documentVersion = 0;
+
   bool get isDirty => _earliestDirtyPhase < _pipeline.length;
 
   late SingleColumnLayoutViewModel _viewModel;
@@ -124,6 +130,7 @@ class SingleColumnLayoutPresenter {
 
     _earliestDirtyPhase = 0;
     _lastChangeLog = changeLog;
+    _documentVersion += 1;
 
     if (!wasDirty && !_notifying) {
       _notifying = true;
@@ -225,6 +232,7 @@ class SingleColumnLayoutPresenter {
         if (viewModel == null) {
           throw Exception("Couldn't find styler to create component for document node: ${node.runtimeType}");
         }
+        viewModel.documentVersion = _documentVersion;
         viewModels.add(viewModel);
       }
 
@@ -327,11 +335,13 @@ class SingleColumnLayoutPresenter {
         continue;
       }
 
-      // The component has changed type, e.g., from an Image to a
-      // Paragraph. This can happen as a result of deletions. Treat
-      // this as a component removal.
-      editorLayoutLog.fineLazy(() => "Component for node $nodeId at index $i was removed");
-      changeMap[nodeId] = -1;
+      // The component has changed type, e.g., from a Task to a
+      // Paragraph. This is a replacement: the old component is
+      // removed and a new one is added in its place.
+      editorLayoutLog.fineLazy(() => "Component for node $nodeId at index $i was replaced");
+      removedComponents.add(nodeId);
+      addedComponents.add(nodeId);
+      changeMap[nodeId] = 0;
     }
 
     // Convert the change map to lists of changes.
@@ -518,6 +528,14 @@ abstract class SingleColumnLayoutComponentViewModel {
   });
 
   final String nodeId;
+
+  /// The document version when this view model was created.
+  ///
+  /// Used by style phases (e.g., selection styler) to detect stale
+  /// view models — if a phase sees a view model whose version is
+  /// older than the current document version, it must force a copy
+  /// instead of skipping it.
+  int? documentVersion;
 
   /// When view model's corresponding node was created, which can be used for
   /// making decisions about animated invalidations.
